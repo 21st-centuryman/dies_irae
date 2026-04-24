@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dies Irae — Terrain</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #f0ede8;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+    }
+
+    canvas { display: block; }
+
+    #ui {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      background: rgba(245, 242, 237, 0.88);
+      border: 1px solid #c8c0b4;
+      padding: 18px 20px;
+      color: #555;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-width: 230px;
+      backdrop-filter: blur(4px);
+    }
+
+    #ui h2 {
+      color: #222;
+      font-size: 11px;
+      letter-spacing: 4px;
+      border-bottom: 1px solid #c8c0b4;
+      padding-bottom: 10px;
+    }
+
+    .field {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    label {
+      font-size: 10px;
+      color: #999;
+      letter-spacing: 1px;
+      width: 28px;
+      text-transform: uppercase;
+    }
+
+    input[type=number] {
+      background: #fff;
+      border: 1px solid #c8c0b4;
+      color: #222;
+      padding: 5px 8px;
+      font-family: inherit;
+      font-size: 12px;
+      width: 130px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input[type=number]:focus {
+      border-color: #6688bb;
+    }
+
+    button#fetchBtn {
+      background: #fff;
+      border: 1px solid #bbb;
+      color: #445;
+      padding: 9px 14px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      transition: background 0.2s, border-color 0.2s, color 0.2s;
+    }
+
+    button#fetchBtn:hover:not(:disabled) {
+      background: #eef1f7;
+      border-color: #6688bb;
+      color: #224;
+    }
+
+    button#fetchBtn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    #status {
+      font-size: 10px;
+      color: #aaa;
+      min-height: 14px;
+      letter-spacing: 0.5px;
+    }
+    #status.loading { color: #996600; }
+    #status.error   { color: #bb2222; }
+    #status.ok      { color: #336622; }
+
+    #hint {
+      position: fixed;
+      bottom: 18px;
+      right: 20px;
+      font-family: 'Courier New', monospace;
+      font-size: 10px;
+      color: #bbb;
+      letter-spacing: 1px;
+      line-height: 1.8;
+      text-align: right;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="ui">
+    <h2>Terrain</h2>
+    <div class="field">
+      <label>lat</label>
+      <input type="number" id="lat" value="56.579" step="0.001">
+    </div>
+    <div class="field">
+      <label>lon</label>
+      <input type="number" id="lon" value="14.186" step="0.001">
+    </div>
+    <button id="fetchBtn">Fetch</button>
+    <div id="status"></div>
+  </div>
+
+  <div id="hint">
+    orbit · pan · scroll to zoom
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="3d.js"></script>
+
+</body>
+</html>
