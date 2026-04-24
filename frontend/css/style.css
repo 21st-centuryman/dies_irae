@@ -1,0 +1,189 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --background: #0D1117;
+
+  --container: #F6F7F9;
+  --container-border: rgba(17, 20, 24, 0.15);
+
+  --text-white: #F6F7F9;
+  --text-black: #1C2127;
+
+  --button: #2F343C;
+  --button-hover: #252A31;
+}
+
+body {
+  background: var(--background);
+  color: var(--text-white);
+  font-family: 'Geist', 'IBM Plex Mono', -apple-system, 'Segoe UI', sans-serif;
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+
+input,
+select {
+  background: transparent;
+  border: 1px solid var(--container-border);
+  border-radius: 6px;
+  padding: 5px 10px;
+}
+
+/* ── Canvas fixed behind everything ── */
+#bg-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+/* ── All content sits above the canvas ── */
+.site-content {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Tables ── */
+.table {
+  background-color: var(--container);
+  color: var(--text-black);
+  border: 4px solid var(--container-border);
+  border-radius: 12px;
+  padding: 30px 20px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  position: fixed;
+  top: 60px;
+}
+
+.close {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--text-black);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+
+  &:hover {
+    opacity: 1;
+  }
+}
+
+.confirmBtn {
+  padding: 8px;
+  border: none;
+  border-radius: 8px;
+  color: var(--text-white);
+  background-color: var(--button);
+  margin-bottom: 10px;
+
+  &:hover {
+    background-color: var(--button-hover);
+    cursor: pointer;
+  }
+}
+
+/* ── Senario table ── */
+#scenarioTable {
+  left: 40px;
+}
+
+#scenarioDropdown {
+  margin: 10px 0;
+  width: 100%;
+  border-radius: 8px;
+}
+
+.server {
+  display: flex;
+  justify-content: space-between;
+}
+
+/* ── Sweden map ── */
+#sweden-map-wrapper {
+  position: relative;
+  width: 100%;
+  height: 300px;
+  flex-shrink: 0;
+}
+
+#expandMap {
+  margin-top: 8px;
+}
+
+#sweden-map {
+  background: var(--background);
+  width: 100%;
+  height: 100%;
+
+  .leaflet-tile-pane {
+    display: none;
+  }
+}
+
+#terrainStatus {
+  color: var(--text-black);
+}
+
+#coordInput {
+  width: 140px;
+  outline: none;
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+/* ── Map table ── */
+
+#mapTable {
+  right: 40px;
+  transition: transform 5000ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 300ms ease;
+
+  &.expanded {
+    inset: 40px;
+    transition: inset 500ms cubic-bezier(0.16, 1, 0.3, 1);
+
+    #sweden-map-wrapper {
+      flex: 1;
+      min-height: 0;
+    }
+
+  }
+}
+
+/* ── Header ── */
+nav {
+  display: flex;
+  justify-content: left;
+  align-items: center;
+  padding: 6px 10px;
+  background-color: var(--container);
+
+  * {
+    margin: 0 10px;
+    color: var(--text-black);
+    font-size: 90%;
+  }
+
+
+  .logo {
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text-black);
+  }
+}

@@ -13,22 +13,41 @@ const HEIGHT_SCALE = 55;
 // World-space size of the terrain plane (arbitrary units).
 const WORLD_SIZE = 1000;
 
+// ─── Colors ──────────────────────────────────────────────────────────────────
+const _css = getComputedStyle(document.documentElement);
+const COLOR_BG = _css.getPropertyValue('--container').trim();  // scene background, terrain rim fade
+const COLOR_AMBIENT = 0xd8cfc4;  // ambient light
+const COLOR_SUN = 0xfffaf0;  // directional sun light
+const COLOR_FILL = 0xaabbdd;  // fill light (cool blue from opposite side)
+const COLOR_CONTOUR = 0xffffff;  // contour line color
+const COLOR_GROUND = 0xC2C1C5;
+
+// Convert a hex color (number or CSS string like "#0D1117") to a GLSL vec3 literal.
+function hexToVec3(hex) {
+  const n = typeof hex === 'string' ? parseInt(hex.replace('#', ''), 16) : hex;
+  const r = ((n >> 16) & 0xff) / 255;
+  const g = ((n >> 8) & 0xff) / 255;
+  const b = (n & 0xff) / 255;
+  return `vec3(${r.toFixed(3)}, ${g.toFixed(3)}, ${b.toFixed(3)})`;
+}
+
 // ─── Renderer ────────────────────────────────────────────────────────────────
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  canvas: document.getElementById('bg-canvas'),
+});
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.9;
-document.body.appendChild(renderer.domElement);
 
 // ─── Scene ───────────────────────────────────────────────────────────────────
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xf0ede8);
-scene.fog = new THREE.FogExp2(0xf0ede8, 0.0008);
+scene.background = new THREE.Color(COLOR_BG);
 
 // ─── Camera + controls ───────────────────────────────────────────────────────
 
@@ -49,10 +68,10 @@ controls.maxPolarAngle = Math.PI * 0.52; // prevent going below ground
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
-const ambient = new THREE.AmbientLight(0xd8cfc4, 2.0);
+const ambient = new THREE.AmbientLight(COLOR_AMBIENT, 2.0);
 scene.add(ambient);
 
-const sun = new THREE.DirectionalLight(0xfffaf0, 3.2);
+const sun = new THREE.DirectionalLight(COLOR_SUN, 3.2);
 sun.position.set(400, 700, 300);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -65,7 +84,7 @@ sun.shadow.camera.bottom = -800;
 sun.shadow.bias = -0.0005;
 scene.add(sun);
 
-const fill = new THREE.DirectionalLight(0xaabbdd, 0.8);
+const fill = new THREE.DirectionalLight(COLOR_FILL, 0.8);
 fill.position.set(-300, 200, -400);
 scene.add(fill);
 
@@ -142,7 +161,7 @@ const terrainFragmentShader = /* glsl */`
     float light    = 0.52 + diffuse * 0.48;
 
     // Flat grey terrain, shaded.
-    vec3 terrainColor = vec3(light * 0.76);
+    vec3 terrainColor = ${hexToVec3(COLOR_GROUND)};
 
     // Contour lines: darken wherever height is near a multiple of spacing.
     float contour   = mod(vHeight, uContourSpacing);
@@ -151,10 +170,10 @@ const terrainFragmentShader = /* glsl */`
                         min(contour, uContourSpacing - contour));
     line *= vFade; // fade lines out at the rim too
 
-    vec3 color = mix(terrainColor, vec3(0.0), line);
+    vec3 color = mix(terrainColor, ${hexToVec3(COLOR_CONTOUR)}, line);
 
     // Blend toward the scene background at the rim.
-    vec3 bgColor = vec3(0.941, 0.929, 0.910);
+    vec3 bgColor = ${hexToVec3(COLOR_BG)};
     color = mix(bgColor, color, vFade);
 
     gl_FragColor = vec4(color, 1.0);
@@ -253,7 +272,7 @@ function buildTerrain(heights, srcW, srcH) {
     uniforms: {
       uContourSpacing: { value: CONTOUR_SPACING },
     },
-    vertexShader:   terrainVertexShader,
+    vertexShader: terrainVertexShader,
     fragmentShader: terrainFragmentShader,
   });
 
@@ -282,8 +301,8 @@ function buildTerrain(heights, srcW, srcH) {
 async function fetchTerrain() {
   const lat = parseFloat(document.getElementById('lat').value);
   const lon = parseFloat(document.getElementById('lon').value);
-  const btn = document.getElementById('fetchBtn');
-  const status = document.getElementById('status');
+  const btn = document.getElementById('sendMap');
+  const status = document.getElementById('terrainStatus');
 
   btn.disabled = true;
   status.className = 'loading';
@@ -334,4 +353,4 @@ async function fetchTerrain() {
   }
 }
 
-document.getElementById('fetchBtn').addEventListener('click', fetchTerrain);
+document.addEventListener('fetchTerrain', fetchTerrain);

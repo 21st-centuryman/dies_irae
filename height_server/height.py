@@ -67,7 +67,9 @@ def stac_search(lat: float, lon: float):
         batch = data.get("features", [])
         features.extend(batch)
         page += 1
-        print(f"[stac] page {page}: {len(batch)} features (total so far: {len(features)})")
+        print(
+            f"[stac] page {page}: {len(batch)} features (total so far: {len(features)})"
+        )
 
         # Follow STAC "next" link if present
         next_url = None
