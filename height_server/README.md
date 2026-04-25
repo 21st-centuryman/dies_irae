@@ -27,7 +27,11 @@ curl 'http://localhost:8000/write?lat=56.579&lon=14.186&out=./terrain.bin'
 
 Note: you need to add a `.env` with the following information:
 
-* API_KEY: String
+* SECRET: String
+* STAC_TOKEN_URL:  float
+* STAC_SEARCH_URL: float
 * RADIUS_KM: Float
 * DEFAULT_TIMEOUT: Int
 * OUTPUT_SIZE: Int
+
+note that you secret is your consumer secret
