@@ -3,15 +3,18 @@ import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { scene, WORLD_SIZE, HEIGHT_SCALE, getTerrainElevRange } from "./3d.js";
+import { makeDroneTexture } from "./svg.js";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const WS_URL = `ws://localhost:3000/simulation/fake/stream`;
+const WS_URL      = `ws://10.154.139.105:3000/simulation/fake/stream`;
+const PREDICT_URL = `ws://${window.location.hostname}:3001/ws`;
 
 const METRES_PER_UNIT = (5 * 2 * 1000) / WORLD_SIZE; // 10 km diameter map → 10 m per world unit
-const SCALE = 1 / METRES_PER_UNIT;
-const TRAIL_LEN = 600;
-const LINE_WIDTH = 2; // px
+const SCALE       = 1 / METRES_PER_UNIT;
+const TRAIL_LEN   = 600;
+const RAW_MAX     = 600;   // positions sent to missile server
+const LINE_WIDTH  = 2; // px
 
 // ─── Binary wire format ───────────────────────────────────────────────────────
 
@@ -49,21 +52,6 @@ const drones = new Map();
 const DRONE_W = 10;
 const DRONE_H = DRONE_W * (158 / 174);
 
-const SVG_DRONE = (top, bottom) =>
-  `<svg xmlns="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny" width="348" height="316" viewBox="41 -4 174 158"><path d="M 45,150 L45,70 100,20 155,70 155,150" stroke-width="4" stroke="black" fill="rgb(220,40,40)" fill-opacity="1"></path><path d="m 60,84 40,20 40,-20 0,8 -40,25 -40,-25 z" stroke-width="3" stroke="none" fill="black"></path><text x="100" y="71" text-anchor="middle" font-size="25" font-family="Arial" font-weight="bold" dominant-baseline="middle" fill="black">${top}</text><text x="100" y="134" text-anchor="middle" font-size="28" font-family="Arial" font-weight="bold" dominant-baseline="middle" fill="black">${bottom}</text><text x="175" y="40" text-anchor="start" font-size="40" font-family="Arial" font-weight="bold" stroke-width="8" stroke="white" fill="black" paint-order="stroke">__ID__</text></svg>`;
-
-function makeDroneTexture(type, id) {
-  const svg = SVG_DRONE(
-    type == 0 ? "ISR" : "A",
-    type == 2 ? "LR" : "SR",
-  ).replace("__ID__", id);
-  const blob = new Blob([svg], { type: "image/svg+xml" });
-  const url = URL.createObjectURL(blob);
-  const tex = new THREE.TextureLoader().load(url, () =>
-    URL.revokeObjectURL(url),
-  );
-  return tex;
-}
 
 // ─── Trail helpers ───────────────────────────────────────────────────────────
 
@@ -106,7 +94,7 @@ function toWorld(x, y, z) {
 function createDrone(data) {
   const pos = toWorld(data.x, data.y, data.z);
 
-  const tex = makeDroneTexture(data.id);
+  const tex = makeDroneTexture(data.type, data.id);
   const mat = new THREE.SpriteMaterial({ map: tex, depthTest: true });
   const sprite = new THREE.Sprite(mat);
   sprite.scale.set(DRONE_W, DRONE_H, 1);
@@ -125,8 +113,9 @@ function createDrone(data) {
     tex,
     trail,
     trailMat,
-    history: [pos.clone()],
-    droneId: data.id,
+    history:    [pos.clone()],
+    rawHistory: [[data.x, data.y, data.z]],
+    droneId:    data.id,
   };
 }
 
@@ -136,6 +125,9 @@ function updateDrone(drone, data) {
 
   drone.history.push(pos.clone());
   if (drone.history.length > TRAIL_LEN) drone.history.shift();
+
+  drone.rawHistory.push([data.x, data.y, data.z]);
+  if (drone.rawHistory.length > RAW_MAX) drone.rawHistory.shift();
 
   if (drone.history.length >= 2) {
     const old = drone.trail.geometry;
@@ -159,7 +151,90 @@ function removeDrone(id) {
 
 export function clearDrones() {
   for (const id of [...drones.keys()]) removeDrone(id);
+  hideImpactMarker();
 }
+
+// ─── Impact marker ────────────────────────────────────────────────────────────
+// Ring on the ground + a short vertical stem — marks the predicted strike point.
+
+let _impactGroup = null;
+
+function _buildImpactMarker() {
+  const group = new THREE.Group();
+
+  const ringGeo = new THREE.RingGeometry(6, 8, 48);
+  ringGeo.rotateX(-Math.PI / 2);
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0xff4400, side: THREE.DoubleSide, depthTest: false,
+  });
+  group.add(new THREE.Mesh(ringGeo, ringMat));
+
+  const dotGeo = new THREE.CircleGeometry(2.5, 24);
+  dotGeo.rotateX(-Math.PI / 2);
+  const dotMat = new THREE.MeshBasicMaterial({
+    color: 0xffaa00, side: THREE.DoubleSide, depthTest: false,
+  });
+  group.add(new THREE.Mesh(dotGeo, dotMat));
+
+  const stemGeo = new THREE.CylinderGeometry(0.5, 0.5, 20, 8);
+  stemGeo.translate(0, 10, 0);
+  const stemMat = new THREE.MeshBasicMaterial({ color: 0xff4400, depthTest: false });
+  group.add(new THREE.Mesh(stemGeo, stemMat));
+
+  group.visible     = false;
+  group.renderOrder = 999;
+  scene.add(group);
+  return group;
+}
+
+function showImpactMarker(x, y, z) {
+  if (!_impactGroup) _impactGroup = _buildImpactMarker();
+  _impactGroup.position.copy(toWorld(x, y, z));
+  _impactGroup.visible = true;
+}
+
+function hideImpactMarker() {
+  if (_impactGroup) _impactGroup.visible = false;
+}
+
+// ─── Missile prediction WebSocket ─────────────────────────────────────────────
+
+let _predictWs = null;
+
+function sendPrediction() {
+  if (!_predictWs || _predictWs.readyState !== WebSocket.OPEN) return;
+
+  // Use the first active drone's raw history.
+  const first = drones.values().next().value;
+  if (!first || first.rawHistory.length < 5) return;
+
+  const lat = parseFloat(document.getElementById('lat')?.value  || '0');
+  const lon = parseFloat(document.getElementById('lon')?.value  || '0');
+
+  _predictWs.send(JSON.stringify({ lat, lon, positions: first.rawHistory }));
+}
+
+function connectPredict() {
+  _predictWs = new WebSocket(PREDICT_URL);
+
+  _predictWs.addEventListener('open', () => console.log('[missile] prediction server connected'));
+
+  _predictWs.addEventListener('message', (ev) => {
+    try {
+      const { impact } = JSON.parse(ev.data);
+      if (impact) {
+        showImpactMarker(impact[0], impact[1], impact[2]);
+      } else {
+        hideImpactMarker();
+      }
+    } catch (_) { /* ignore malformed */ }
+  });
+
+  _predictWs.addEventListener('close', () => setTimeout(connectPredict, 2000));
+  _predictWs.addEventListener('error', () => _predictWs.close());
+}
+
+connectPredict();
 
 // ─── WebSocket ───────────────────────────────────────────────────────────────
 
@@ -181,6 +256,9 @@ function handleMessage(ev) {
   for (const id of drones.keys()) {
     if (!seen.has(id)) removeDrone(id);
   }
+
+  // Push latest positions to missile server on every frame.
+  sendPrediction();
 }
 
 function connect() {
