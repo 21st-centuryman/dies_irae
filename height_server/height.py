@@ -1,9 +1,9 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+from concurrent.futures import ThreadPoolExecutor, as_completed  # ← was missing
+import tempfile  # ← was missing
 import math
 import os
-import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import OrderedDict
 import threading
 
@@ -19,7 +19,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY = os.getenv("API_KEY", "")
+API_KEY = requests.post(
+    os.getenv("STAC_TOKEN_URL", ""),
+    headers={"Authorization": "Basic " + os.getenv("SECRET", "")},
+    data={"grant_type": "client_credentials"},
+    verify=False,
+).json()["access_token"]
 STAC_SEARCH_URL = os.getenv("STAC_SEARCH_URL", "")
 RADIUS_KM = float(os.getenv("RADIUS_KM", 30.0))
 DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT", 60))
