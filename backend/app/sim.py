@@ -227,6 +227,7 @@ class SimEngine:
         spawn_bearing_deg: float = 0.0,
         spawn_altitude_agl_m: float = SPAWN_ALTITUDE_AGL_M,
         drone_type: int = 0,
+        drone_count: int = 1,
     ) -> None:
         self.heightmap  = heightmap
         self.target_xy  = (float(target_xy[0]), float(target_xy[1]))
@@ -237,22 +238,36 @@ class SimEngine:
         self.max_speed  = params.max_speed_mps
         self.max_accel  = params.max_accel_mps2
 
-        self.state = DroneState(capacity=1)
+        # Spawn `drone_count` drones along an arc of the perimeter centered
+        # on the spawn bearing. Per-drone wedge of 2°, capped at 60° total
+        # so a swarm doesn't wrap around the entire ring.
+        drone_count = max(1, int(drone_count))
+        self.state  = DroneState(capacity=drone_count)
 
-        theta   = compass_to_math_angle(spawn_bearing_deg)
-        spawn_x = self.ring_radius * math.cos(theta)
-        spawn_y = self.ring_radius * math.sin(theta)
-        spawn_ground = float(heightmap.height_at(spawn_x, spawn_y))
-        spawn_z      = spawn_ground + spawn_altitude_agl_m
-        self.spawn_xyz = (spawn_x, spawn_y, spawn_z)
+        center_theta = compass_to_math_angle(spawn_bearing_deg)
+        if drone_count == 1:
+            bearings = [center_theta]
+        else:
+            arc_total = math.radians(min(60.0, 2.0 * (drone_count - 1)))
+            half      = arc_total / 2.0
+            step      = arc_total / (drone_count - 1)
+            bearings  = [center_theta - half + step * i for i in range(drone_count)]
 
-        self.state.spawn(
-            position=self.spawn_xyz,
-            velocity=(0.0, 0.0, 0.0),
-            type_=drone_type,
-            state=ACTIVE,
-            intent=INTENT_SEEKING,
-        )
+        for theta in bearings:
+            sx = self.ring_radius * math.cos(theta)
+            sy = self.ring_radius * math.sin(theta)
+            sg = float(heightmap.height_at(sx, sy))
+            sz = sg + spawn_altitude_agl_m
+            self.state.spawn(
+                position=(sx, sy, sz),
+                velocity=(0.0, 0.0, 0.0),
+                type_=drone_type,
+                state=ACTIVE,
+                intent=INTENT_SEEKING,
+            )
+
+        # Representative spawn for the API/log: take the first drone's pose.
+        self.spawn_xyz = tuple(float(v) for v in self.state.positions[0])
 
         target_ground    = float(heightmap.height_at(self.target_xy[0], self.target_xy[1]))
         self._target_3d  = np.array(
@@ -425,8 +440,11 @@ class SimEngine:
 
         active = states == ACTIVE
         if not active.any():
-            self.finished     = True
-            self.finish_reason = "no_active_drones"
+            # All drones have either reached the target or been destroyed.
+            self.finished      = True
+            self.finish_reason = (
+                "reached_target" if (states == REACHED).any() else "no_active_drones"
+            )
             return
 
         # Reach check first so we don't steer drones that are already there.
@@ -469,7 +487,3 @@ class SimEngine:
             vel[below, 2] = np.maximum(vel[below, 2], 0.0)
 
         self.t += SIM_DT
-
-        if (states == REACHED).any():
-            self.finished      = True
-            self.finish_reason = "reached_target"

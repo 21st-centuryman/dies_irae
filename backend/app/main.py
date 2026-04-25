@@ -109,6 +109,7 @@ def _build_engine(heightmap: Heightmap, config: ScenarioConfig) -> SimEngine:
         target_xy=target_xy,
         ring_radius_m=_MAP_HALF_EXTENT_M,
         spawn_bearing_deg=_bearing_opposite_target(tx, ty),
+        drone_count=max(1, int(config.drone_count)),
     )
 
 
@@ -191,8 +192,16 @@ async def _start_scenario(config: ScenarioConfig, request: Request) -> dict[str,
     heightmap = await _ensure_heightmap_for(request.app, config.lat, config.lon)
 
     async with _scenario_lock:
-        if _active_scenario is not None and _active_scenario.engine_task is not None:
-            _active_scenario.engine_task.cancel()
+        if _active_scenario is not None:
+            # Tear down the previous run before starting the new one. Marking
+            # the engine `finished` is what the existing websocket loop is
+            # already watching for — it will emit scenario_ended and close,
+            # so the client reconnects against the fresh scenario rather
+            # than briefly streaming a frozen copy of the old drones.
+            _active_scenario.engine.finished      = True
+            _active_scenario.engine.finish_reason = "replaced"
+            if _active_scenario.engine_task is not None:
+                _active_scenario.engine_task.cancel()
 
         engine  = _build_engine(heightmap, config)
         session = ScenarioSession(config=config, engine=engine)

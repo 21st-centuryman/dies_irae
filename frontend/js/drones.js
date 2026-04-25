@@ -189,7 +189,12 @@ function connect() {
 
   ws.addEventListener("open", () => console.log("[drones] connected"));
   ws.addEventListener("message", handleMessage);
-  ws.addEventListener("close", () => setTimeout(connect, 2000));
+  ws.addEventListener("close", () => {
+    // Drop all sprites/trails so a reconnect (e.g. after a new
+    // /scenario/start replaces the run) doesn't carry old drones over.
+    clearDrones();
+    setTimeout(connect, 2000);
+  });
   ws.addEventListener("error", () => ws.close());
 }
 
