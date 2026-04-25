@@ -157,12 +157,12 @@ class ScenarioSession:
 # Simulation engine constants
 # ---------------------------------------------------------------------------
 
-SIM_HZ   = 60
+SIM_HZ   = 10
 SIM_DT   = 1.0 / SIM_HZ
 STREAM_HZ = 20
 
 REACH_THRESHOLD_M    = 30.0
-SPAWN_ALTITUDE_AGL_M = 100.0
+SPAWN_ALTITUDE_AGL_M = 0.0
 DEFAULT_RING_RADIUS_M = 5000.0
 MIN_AGL_CLEARANCE_M  = 0.0
 
