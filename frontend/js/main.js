@@ -5,9 +5,12 @@ import {
   setSetupType,
   clearSetup,
   getRadarPositions,
+  getSamPositions,
+  setSimRunning,
 } from "./setup.js";
-import { WORLD_SIZE } from "./3d.js";
+import { WORLD_SIZE, HEIGHT_SCALE, getTerrainElevRange } from "./3d.js";
 import { clearDrones } from "./drones.js";
+import { clearMissiles } from "./missile.js";
 
 // ===========================================================================
 // DARK / LIGHT MODE
@@ -97,7 +100,10 @@ function setCoordinate(lat, lng) {
   coordInput.value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
   latInput.value = lat;
   lonInput.value = lng;
+  if (simRunning) stopScenario();
   clearSetup();
+  clearDrones();
+  clearMissiles();
 }
 
 coordInput.addEventListener("keydown", (e) => {
@@ -112,8 +118,6 @@ coordInput.addEventListener("keydown", (e) => {
 });
 
 swedenMap.on("click", (e) => {
-  if (isSetupActive()) return; // setup.js handles this click
-
   const { lat, lng } = e.latlng;
 
   if (swedenGeoJSON) {
@@ -183,9 +187,12 @@ document.getElementById("setupItemType").addEventListener("click", (e) => {
   setSetupType(btn.dataset.value);
 });
 
-document
-  .getElementById("clearSetup")
-  .addEventListener("click", () => clearSetup());
+document.getElementById("clearSetup").addEventListener("click", async () => {
+  if (simRunning) await stopScenario();
+  clearSetup();
+  clearDrones();
+  clearMissiles();
+});
 
 // ===========================================================================
 // SPEED
@@ -217,7 +224,19 @@ document.getElementById("speed").addEventListener("click", toggleSpeed);
 // ===========================================================================
 // SCENARIO
 // ===========================================================================
-const SCENARIO_SERVER = "http://localhost:3000";
+const SCENARIO_SERVER = "http://10.154.139.105:3000";
+
+// ─── Simulation state ────────────────────────────────────────────────────────
+
+let simRunning = false;
+
+async function stopScenario() {
+  simRunning = false;
+  setSimRunning(false);
+  try {
+    await fetch(`${SCENARIO_SERVER}/scenario/stop`, { method: "PUT" });
+  } catch (_) { /* non-fatal if server not reachable */ }
+}
 
 // Linked percentage pairs: changing one updates the other to 100 - value.
 function linkPct(aId, bId, onChange) {
@@ -318,8 +337,30 @@ document.getElementById("sendScenario").addEventListener("click", async () => {
   };
 
   clearDrones();
+  clearMissiles();
+  simRunning = false;
+  setSimRunning(false);
 
   console.log("[scenario] PUT /scenario/start", payload);
+
+  // Tell the missile server where the SAM sites are (xyz in server metres).
+  // World y → real elevation: elev = (world_y / HEIGHT_SCALE) * hRange + minH
+  const { minH, hRange } = getTerrainElevRange();
+  const samPositions = getSamPositions().map(p => [
+    p.x * METRES_PER_UNIT,
+    -p.z * METRES_PER_UNIT,
+    (p.y / HEIGHT_SCALE) * hRange + minH,
+  ]);
+  const MISSILE_SERVER = `http://${window.location.hostname}:4000`;
+  fetch(`${MISSILE_SERVER}/sam/positions`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      positions: samPositions,
+      lat: parseFloat(latInput.value),
+      lon: parseFloat(lonInput.value),
+    }),
+  }).catch(() => {});  // non-fatal if missile server isn't running
 
   try {
     const res = await fetch(`${SCENARIO_SERVER}/scenario/start`, {
@@ -329,6 +370,8 @@ document.getElementById("sendScenario").addEventListener("click", async () => {
     });
     statusEl.textContent = `Status: ${res.status}`;
     if (res.ok) {
+      simRunning = true;
+      setSimRunning(true);
       const data = await res.json();
       document.dispatchEvent(
         new CustomEvent("scenarioStarted", {

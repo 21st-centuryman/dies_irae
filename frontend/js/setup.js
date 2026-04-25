@@ -1,41 +1,20 @@
 import * as THREE from "three";
 import { scene, camera, renderer, WORLD_SIZE, getTerrain } from "./3d.js";
+import { makeRadarTexture, makeSamTexture } from "./svg.js";
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
 let _active = false;
 let _type = "radar"; // 'radar' | 'sam'
+let _simRunning = false;
 
 const _sprites = [];
 const _radarPositions = [];
+const _samPositions = [];
 let _radarCount = 0;
 let _samCount = 0;
 const MAX_RADARS = 3;
 
-// ─── Radar SVG template ──────────────────────────────────────────────────────
-// Original viewBox: "-20 36 321.33 136"  (width≈642, height≈272)
-// We replace __ID__ with the assigned number and keep text red.
-
-const RADAR_SVG_TEMPLATE = `<svg xmlns="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny" width="642.6666666666666" height="272" viewBox="-20 36 321.3333333333333 136"><circle cx="100" cy="100" r="60" stroke-width="4" stroke="black" fill="rgb(0,160,255)" fill-opacity="1" ></circle><g transform="translate(0,0)" ><g transform="scale(1)" ><path d="M72,95 l30,-25 0,25 30,-25 M70,70 c0,35 15,50 50,50" stroke-width="3" stroke="black" fill="none" ></path></g></g><text x="20" y="160" text-anchor="end" font-size="40" font-family="Arial" font-weight="bold" stroke-width="8" stroke="white" fill="red" paint-order="stroke" >__ID__</text><text x="180" y="120" text-anchor="start" font-size="40" font-family="Arial" font-weight="bold" stroke-width="8" stroke="white" fill="red" paint-order="stroke" >target</text></svg>`;
-
-function makeRadarTexture(id) {
-  const svg = RADAR_SVG_TEMPLATE.replace("__ID__", String(id));
-  const blob = new Blob([svg], { type: "image/svg+xml" });
-  const url = URL.createObjectURL(blob);
-  return new THREE.TextureLoader().load(url, () => URL.revokeObjectURL(url));
-}
-
-// ─── SAM SVG templates ───────────────────────────────────────────────────────
-
-const SAM_SVG_TEMPLATE = (range) =>
-  `<svg xmlns="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny" width="428" height="252" viewBox="-35 46 214 126"><path d="M25,50 l150,0 0,100 -150,0 z" stroke-width="4" stroke="black" fill="rgb(0,160,255)" fill-opacity="1" ></path><path d="M25,150 C25,110 175,110 175,150" stroke-width="3" stroke="black" fill="none" ></path><path d="M 100,82.62 V 120  M 90,120 V 90 c 0,-10 20,-10 20,0 v 30" stroke-width="3" stroke="black" fill="none" ></path><text x="100" y="134" text-anchor="middle" font-size="28" font-family="Arial" font-weight="bold" dominant-baseline="middle" stroke-width="3" stroke="none" fill="black" >${range}</text><text x="5" y="160" text-anchor="end" font-size="40" font-family="Arial" font-weight="bold" stroke-width="8" stroke="white" fill="black" paint-order="stroke" >__ID__</text></svg>`;
-
-function makeSamTexture(template, id) {
-  const svg = template.replace("__ID__", String(id));
-  const blob = new Blob([svg], { type: "image/svg+xml" });
-  const url = URL.createObjectURL(blob);
-  return new THREE.TextureLoader().load(url, () => URL.revokeObjectURL(url));
-}
 
 // ─── Sprite sizes (world units) ──────────────────────────────────────────────
 
@@ -60,6 +39,7 @@ function onPointerDown(e) {
 
 function onPointerUp(e) {
   if (!_active || !_mouseDown) return;
+  if (_simRunning) return; // placement locked during active scenario
 
   const dx = e.clientX - _mouseDown.x;
   const dy = e.clientY - _mouseDown.y;
@@ -92,10 +72,12 @@ function onPointerUp(e) {
     _radarPositions.push(pt.clone());
     _radarCount++;
   } else if (_type === "lrsam") {
-    tex = makeSamTexture(SAM_SVG_TEMPLATE("LR"), _samCount);
+    tex = makeSamTexture("LR", _samCount);
+    _samPositions.push(pt.clone());
     _samCount++;
   } else {
-    tex = makeSamTexture(SAM_SVG_TEMPLATE("SR"), _samCount);
+    tex = makeSamTexture("SR", _samCount);
+    _samPositions.push(pt.clone());
     _samCount++;
   }
 
@@ -113,9 +95,9 @@ function onPointerUp(e) {
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-export function getRadarPositions() {
-  return _radarPositions.slice();
-}
+export function getRadarPositions() { return _radarPositions.slice(); }
+export function getSamPositions()   { return _samPositions.slice(); }
+export function setSimRunning(val)  { _simRunning = val; }
 export function isSetupActive() {
   return _active;
 }
@@ -133,6 +115,7 @@ export function clearSetup() {
   }
   _sprites.length = 0;
   _radarPositions.length = 0;
+  _samPositions.length = 0;
   _radarCount = 0;
   _samCount = 0;
 }
