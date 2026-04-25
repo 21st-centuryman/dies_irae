@@ -157,12 +157,12 @@ class ScenarioSession:
 # Simulation engine constants
 # ---------------------------------------------------------------------------
 
-SIM_HZ   = 10
+SIM_HZ   = 60
 SIM_DT   = 1.0 / SIM_HZ
 STREAM_HZ = 20
 
 REACH_THRESHOLD_M    = 30.0
-SPAWN_ALTITUDE_AGL_M = 0.0
+SPAWN_ALTITUDE_AGL_M = 100.0
 DEFAULT_RING_RADIUS_M = 5000.0
 MIN_AGL_CLEARANCE_M  = 0.0
 
@@ -186,6 +186,12 @@ COST_GOAL_WEIGHT      = 50.0  # per radian of bearing-to-target misalignment
 COST_TURN_WEIGHT      = 30.0  # per radian of heading change (hysteresis)
 MAX_YAW_RATE_DEG_S    = 120.0 # cap on heading change per second
 ALT_TRACK_TAU_S       = 1.5   # gap-closing time constant for vertical track
+IMPACT_RADIUS_M       = 5.0   # final-impact override: inside this XY radius
+                              # the drone seeks target_3d directly
+DESCEND_RANGE_M       = 500.0 # XY distance over which the safety AGL ramps
+                              # linearly from full → 0, so the drone glides
+                              # smoothly down onto the target instead of
+                              # cruising overhead and overshooting.
 
 
 @dataclass(frozen=True)
@@ -352,18 +358,30 @@ class SimEngine:
         desired_vx = np.cos(new_theta).astype(np.float32) * self.max_speed
         desired_vy = np.sin(new_theta).astype(np.float32) * self.max_speed
 
-        # ── 6. Vertical: terrain-follow within near horizon of chosen ray ─
-        near_count = max(1, int(round(PROBE_COUNT * NEAR_HORIZON_TIME_S / HORIZON_TIME_S)))
+        # ── 6. Vertical: terrain-follow that ramps into a dive near target ─
+        # Only consider corridor probes that lie *between* us and the target.
+        # Probes past the target (e.g. a hill behind it) would otherwise
+        # keep `near_peak` high and prevent the drone from descending.
+        dist_xy   = np.linalg.norm(to_tgt, axis=1)
         chosen_terrain = terrain[rows, best_idx, :]                   # (n, P)
-        near_peak      = chosen_terrain[:, :near_count].max(axis=1)
-        desired_z      = np.minimum(near_peak + TERRAIN_SAFETY_AGL_M, np.float32(max_alt))
-        # Also pull toward target altitude when no terrain pressure (so the
-        # drone descends into the target rather than cruising high forever).
-        # Blend: alt_target = max(terrain_follow, descent_toward_target).
-        # Closing rate proportional to remaining XY distance keeps it gentle.
-        dist_xy = np.linalg.norm(to_tgt, axis=1)
-        glide_z = self._target_3d[2] + np.maximum(dist_xy * 0.05, 0.0)  # ~3° glideslope
-        desired_z = np.maximum(desired_z, np.minimum(glide_z, pos[:, 2]))
+        within_target  = probe_d[None, :] <= dist_xy[:, None]         # (n, P)
+        masked_terrain = np.where(
+            within_target, chosen_terrain, np.float32(-np.inf),
+        )
+        near_peak = masked_terrain.max(axis=1)
+        # If the drone is already inside the closest probe distance, fall
+        # back to the target's own elevation as the floor.
+        no_probes  = ~within_target.any(axis=1)
+        target_z32 = np.float32(self._target_3d[2])
+        near_peak  = np.where(no_probes, target_z32, near_peak)
+
+        # Safety AGL ramps linearly from full → 0 over DESCEND_RANGE_M of
+        # final approach, so the drone glides down to target_z by the time
+        # it arrives instead of cruising overhead and overshooting.
+        descend_factor = np.clip(dist_xy / DESCEND_RANGE_M, 0.0, 1.0)
+        safety_agl     = TERRAIN_SAFETY_AGL_M * descend_factor
+        desired_z      = np.minimum(near_peak + safety_agl, np.float32(max_alt))
+
         # Predictive vz that closes the altitude gap over ALT_TRACK_TAU_S.
         desired_vz = np.clip(
             (desired_z - pos[:, 2]) / ALT_TRACK_TAU_S,
@@ -380,6 +398,19 @@ class SimEngine:
         # line to the target (we deflected to find a clear path).
         chosen_goal_diff = _wrap(chosen_theta - tgt_theta)
         avoiding = (chosen_deficit > 0.0) | (np.abs(chosen_goal_diff) > math.radians(5.0))
+
+        # Impact-radius override: once the drone is within IMPACT_RADIUS_M of
+        # the target in XY, ignore terrain clearance and dive straight at
+        # the target. Without this, the safety AGL keeps the drone cruising
+        # ~50 m above the target instead of actually impacting it.
+        near_target = dist_xy < IMPACT_RADIUS_M
+        if near_target.any():
+            delta3 = self._target_3d - pos
+            dist3  = np.maximum(np.linalg.norm(delta3, axis=1, keepdims=True), 1e-6)
+            seek_v = (delta3 / dist3 * self.max_speed).astype(np.float32)
+            mask3  = near_target[:, None]
+            desired_v = np.where(mask3, seek_v, desired_v)
+            avoiding  = avoiding & ~near_target
         return desired_v, avoiding
 
     def step(self) -> None:
@@ -399,9 +430,12 @@ class SimEngine:
             return
 
         # Reach check first so we don't steer drones that are already there.
+        # 3D distance, not XY — otherwise drones get flagged "reached" while
+        # still at cruise altitude overhead, before the impact-radius dive
+        # can bring them down to target_z.
         delta       = self._target_3d - pos
-        dist_xy     = np.sqrt(delta[:, 0] ** 2 + delta[:, 1] ** 2)
-        reached_now = active & (dist_xy < REACH_THRESHOLD_M)
+        dist3       = np.sqrt(delta[:, 0] ** 2 + delta[:, 1] ** 2 + delta[:, 2] ** 2)
+        reached_now = active & (dist3 < REACH_THRESHOLD_M)
         if reached_now.any():
             idx = np.where(reached_now)[0]
             states[idx] = REACHED
