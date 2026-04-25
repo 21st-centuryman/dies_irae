@@ -141,6 +141,12 @@ class ScenarioConfig(BaseModel):
     lat:   float
     lon:   float
     targets: list = Field(default_factory=lambda: [[0.0, 0.0]])
+    # Spawn-direction configuration. Compass azimuths in degrees (0° = N,
+    # 90° = E). Empty `dir` list → drones spawn at random positions around
+    # the perimeter. `dir_spread` is the half-width of the uniform arc
+    # around each supplied direction; 0 → drones spawn exactly on the dirs.
+    dir:        list[float] = Field(default_factory=list)
+    dir_spread: float       = 0.0
 
     model_config = {"extra": "allow"}
 
@@ -222,15 +228,15 @@ class SimEngine:
     def __init__(
         self,
         heightmap: Heightmap,
-        target_xy: tuple[float, float],
+        targets_xy: list[tuple[float, float]],
         ring_radius_m: float = DEFAULT_RING_RADIUS_M,
-        spawn_bearing_deg: float = 0.0,
         spawn_altitude_agl_m: float = SPAWN_ALTITUDE_AGL_M,
         drone_type: int = 0,
         drone_count: int = 1,
+        spawn_dirs_deg: list[float] | None = None,
+        dir_spread_deg: float = 0.0,
     ) -> None:
-        self.heightmap  = heightmap
-        self.target_xy  = (float(target_xy[0]), float(target_xy[1]))
+        self.heightmap   = heightmap
         self.ring_radius = float(ring_radius_m)
         self.drone_type  = drone_type
 
@@ -238,22 +244,60 @@ class SimEngine:
         self.max_speed  = params.max_speed_mps
         self.max_accel  = params.max_accel_mps2
 
-        # Spawn `drone_count` drones along an arc of the perimeter centered
-        # on the spawn bearing. Per-drone wedge of 2°, capped at 60° total
-        # so a swarm doesn't wrap around the entire ring.
+        # ── Targets ─────────────────────────────────────────────────────
+        if not targets_xy:
+            targets_xy = [(0.0, 0.0)]
+        self._targets_3d = np.array(
+            [
+                (float(tx), float(ty), float(heightmap.height_at(float(tx), float(ty))))
+                for (tx, ty) in targets_xy
+            ],
+            dtype=np.float32,
+        )                                                       # (n_targets, 3)
+        n_targets = self._targets_3d.shape[0]
+
+        # Backwards-compat single-target fields (used by /scenario/start
+        # response, /simulation/status, and the startup log). They refer to
+        # the first target — for multi-target scenarios the truthful list
+        # lives on `_targets_3d`.
+        self.target_xy = (float(self._targets_3d[0, 0]), float(self._targets_3d[0, 1]))
+        self.target_z  = float(self._targets_3d[0, 2])
+
+        # ── Drones: round-robin assign each drone to one target ─────────
         drone_count = max(1, int(drone_count))
         self.state  = DroneState(capacity=drone_count)
+        self._drone_target_idx = np.array(
+            [i % n_targets for i in range(drone_count)], dtype=np.intp,
+        )
 
-        center_theta = compass_to_math_angle(spawn_bearing_deg)
-        if drone_count == 1:
-            bearings = [center_theta]
+        # ── Spawn azimuths ──────────────────────────────────────────────
+        # Compass azimuth: 0° = north, 90° = east. Three modes:
+        #   • no `spawn_dirs_deg`: each drone gets a uniform-random
+        #     azimuth in [0, 360);
+        #   • dirs supplied, spread = 0: drones snap exactly to the
+        #     supplied dirs, round-robin (drone i → dirs[i % k]);
+        #   • dirs supplied, spread > 0: round-robin assign each drone
+        #     to a dir, then jitter by uniform(-spread, +spread) around
+        #     it — so dirs=[15, 89] with spread=5 yields drones uniformly
+        #     distributed in the arcs [10, 20] and [84, 94].
+        rng = np.random.default_rng()
+        dirs = list(spawn_dirs_deg) if spawn_dirs_deg else []
+        spread = max(0.0, float(dir_spread_deg))
+
+        if not dirs:
+            spawn_az_deg = rng.uniform(0.0, 360.0, size=drone_count)
         else:
-            arc_total = math.radians(min(60.0, 2.0 * (drone_count - 1)))
-            half      = arc_total / 2.0
-            step      = arc_total / (drone_count - 1)
-            bearings  = [center_theta - half + step * i for i in range(drone_count)]
+            base = np.array(
+                [dirs[i % len(dirs)] for i in range(drone_count)],
+                dtype=np.float64,
+            )
+            if spread > 0.0:
+                spawn_az_deg = base + rng.uniform(-spread, spread, size=drone_count)
+            else:
+                spawn_az_deg = base
 
-        for theta in bearings:
+        for az in spawn_az_deg:
+            theta = compass_to_math_angle(float(az))
             sx = self.ring_radius * math.cos(theta)
             sy = self.ring_radius * math.sin(theta)
             sg = float(heightmap.height_at(sx, sy))
@@ -266,16 +310,11 @@ class SimEngine:
                 intent=INTENT_SEEKING,
             )
 
-        # Representative spawn for the API/log: take the first drone's pose.
+        # Representative spawn for the API/log: first drone's pose.
         self.spawn_xyz = tuple(float(v) for v in self.state.positions[0])
 
-        target_ground    = float(heightmap.height_at(self.target_xy[0], self.target_xy[1]))
-        self._target_3d  = np.array(
-            [self.target_xy[0], self.target_xy[1], target_ground], dtype=np.float32
-        )
-        self.target_z    = float(self._target_3d[2])
-        self.t           = 0.0
-        self.finished    = False
+        self.t              = 0.0
+        self.finished       = False
         self.finish_reason: str | None = None
 
     def _choose_desired_velocity(
@@ -306,8 +345,11 @@ class SimEngine:
         moving  = h_speed > 1.0
         cur_theta = np.zeros(n, dtype=np.float32)
         cur_theta[moving] = np.arctan2(vel[moving, 1], vel[moving, 0])
-        # Bearing from each drone to the target (XY).
-        to_tgt = self._target_3d[:2] - pos[:, :2]
+        # Per-drone target lookup (each drone has its own target via
+        # `_drone_target_idx`). Shape (n, 3).
+        drone_tgt = self._targets_3d[self._drone_target_idx]
+        # Bearing from each drone to its assigned target (XY).
+        to_tgt = drone_tgt[:, :2] - pos[:, :2]
         tgt_theta = np.arctan2(to_tgt[:, 1], to_tgt[:, 0]).astype(np.float32)
         # Cold start (drone stationary): treat target bearing as current heading
         # so the fan is centered on the goal direction.
@@ -385,10 +427,9 @@ class SimEngine:
         )
         near_peak = masked_terrain.max(axis=1)
         # If the drone is already inside the closest probe distance, fall
-        # back to the target's own elevation as the floor.
-        no_probes  = ~within_target.any(axis=1)
-        target_z32 = np.float32(self._target_3d[2])
-        near_peak  = np.where(no_probes, target_z32, near_peak)
+        # back to its own target's elevation as the floor.
+        no_probes = ~within_target.any(axis=1)
+        near_peak = np.where(no_probes, drone_tgt[:, 2], near_peak)
 
         # Safety AGL ramps linearly from full → 0 over DESCEND_RANGE_M of
         # final approach, so the drone glides down to target_z by the time
@@ -415,12 +456,12 @@ class SimEngine:
         avoiding = (chosen_deficit > 0.0) | (np.abs(chosen_goal_diff) > math.radians(5.0))
 
         # Impact-radius override: once the drone is within IMPACT_RADIUS_M of
-        # the target in XY, ignore terrain clearance and dive straight at
-        # the target. Without this, the safety AGL keeps the drone cruising
-        # ~50 m above the target instead of actually impacting it.
+        # its target in XY, ignore terrain clearance and dive straight at
+        # it. Without this, the safety AGL keeps the drone cruising ~50 m
+        # above the target instead of actually impacting it.
         near_target = dist_xy < IMPACT_RADIUS_M
         if near_target.any():
-            delta3 = self._target_3d - pos
+            delta3 = drone_tgt - pos
             dist3  = np.maximum(np.linalg.norm(delta3, axis=1, keepdims=True), 1e-6)
             seek_v = (delta3 / dist3 * self.max_speed).astype(np.float32)
             mask3  = near_target[:, None]
@@ -448,10 +489,12 @@ class SimEngine:
             return
 
         # Reach check first so we don't steer drones that are already there.
-        # 3D distance, not XY — otherwise drones get flagged "reached" while
-        # still at cruise altitude overhead, before the impact-radius dive
-        # can bring them down to target_z.
-        delta       = self._target_3d - pos
+        # Each drone is tested against its own assigned target. 3D distance,
+        # not XY — otherwise drones get flagged "reached" while still at
+        # cruise altitude overhead, before the impact-radius dive can bring
+        # them down to target_z.
+        drone_tgt   = self._targets_3d[self._drone_target_idx]
+        delta       = drone_tgt - pos
         dist3       = np.sqrt(delta[:, 0] ** 2 + delta[:, 1] ** 2 + delta[:, 2] ** 2)
         reached_now = active & (dist3 < REACH_THRESHOLD_M)
         if reached_now.any():

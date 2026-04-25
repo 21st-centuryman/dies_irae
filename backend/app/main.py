@@ -85,31 +85,30 @@ async def announce_writes(request: Request, call_next):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _first_target_xy(targets: list) -> tuple[float, float]:
+def _targets_xy(targets: list) -> list[tuple[float, float]]:
+    """Normalize the scenario's `targets` field into a list of (x, y) tuples.
+
+    Accepts both [[x, y], ...] (frontend wire format) and a single flat
+    [x, y] for backwards compat. Empty lists are coerced to a single
+    target at the origin so the engine always has at least one.
+    """
     if not targets:
-        return (0.0, 0.0)
+        return [(0.0, 0.0)]
     first = targets[0]
     if isinstance(first, (list, tuple)):
-        return (float(first[0]), float(first[1]))
-    return (float(targets[0]), float(targets[1]))
-
-
-def _bearing_opposite_target(tx: float, ty: float) -> float:
-    if tx == 0.0 and ty == 0.0:
-        return 0.0
-    math_angle_deg = math.degrees(math.atan2(ty, tx))
-    return (90.0 - math_angle_deg + 180.0) % 360.0
+        return [(float(t[0]), float(t[1])) for t in targets]
+    # Flat [x, y] — treat as a single target.
+    return [(float(targets[0]), float(targets[1]))]
 
 
 def _build_engine(heightmap: Heightmap, config: ScenarioConfig) -> SimEngine:
-    target_xy = _first_target_xy(config.targets)
-    tx, ty    = target_xy
     return SimEngine(
         heightmap=heightmap,
-        target_xy=target_xy,
+        targets_xy=_targets_xy(config.targets),
         ring_radius_m=_MAP_HALF_EXTENT_M,
-        spawn_bearing_deg=_bearing_opposite_target(tx, ty),
         drone_count=max(1, int(config.drone_count)),
+        spawn_dirs_deg=[float(d) for d in config.dir],
+        dir_spread_deg=float(config.dir_spread),
     )
 
 

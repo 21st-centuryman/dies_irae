@@ -303,11 +303,13 @@ document.getElementById("sendScenario").addEventListener("click", async () => {
     scenario_type: scenarioType,
     spawn_window: parseInt(document.getElementById("spawnWindow").value) || 0,
     wave_interval: parseInt(document.getElementById("waveInterval").value) || 0,
-    dir:
-      document
-        .getElementById("dir")
-        .value.split(",")
-        .map((s) => Number(s.trim())) || [],
+    dir: document
+      .getElementById("dir")
+      .value.split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .map(Number)
+      .filter((n) => Number.isFinite(n)),
     dir_spread: parseFloat(document.getElementById("dir_spread").value) || 0,
     lat: parseFloat(document.getElementById("lat").value),
     lon: parseFloat(document.getElementById("lon").value),
