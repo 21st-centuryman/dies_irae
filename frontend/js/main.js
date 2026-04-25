@@ -8,7 +8,6 @@ import {
 } from "./setup.js";
 import { WORLD_SIZE } from "./3d.js";
 import { clearDrones } from "./drones.js";
-import { DirectionalLightShadow } from "three/src/Three.Core.js";
 
 // ===========================================================================
 // DARK / LIGHT MODE
