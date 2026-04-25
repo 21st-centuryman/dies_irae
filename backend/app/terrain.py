@@ -20,6 +20,15 @@ DEFAULT_BASE_URL = "http://10.154.6.177:8000"
 
 _M_PER_DEG_LAT = 111_320.0
 
+# Total width/height of the simulation's "world" in sim meters.
+# The frontend renders the entire heightmap tile over a plane of size
+# WORLD_SIZE * METRES_PER_UNIT = 1000 * 10 = 10_000 m. We therefore treat
+# sim coordinates as the frontend's compressed view: regardless of the
+# geographic extent the height server actually returns (typically 60 km),
+# the heightmap is mapped onto SIM_MAP_EXTENT_M of sim space so that
+# backend height samples line up with the on-screen mesh vertices.
+SIM_MAP_EXTENT_M = 10_000.0
+
 
 # ---------------------------------------------------------------------------
 # Raw heightmap (geographic coords)
@@ -144,8 +153,32 @@ class Heightmap:
     *decreasing* row index.
     """
 
-    def __init__(self, raw: RawHeightmap, target_lat: float, target_lon: float) -> None:
-        self.array = raw.array
+    def __init__(
+        self,
+        raw: RawHeightmap,
+        target_lat: float,
+        target_lon: float,
+        *,
+        sim_extent_m: float = SIM_MAP_EXTENT_M,
+    ) -> None:
+        # Sanitize nodata: the height server returns NaN (and sometimes
+        # out-of-realistic-range sentinels like -32768) for cells with no
+        # terrain data — water, missing tiles, etc. Bilinear interpolation
+        # over even one NaN neighbor yields NaN, which silently propagates
+        # into spawn_z / target_z and makes drones invisible in Three.js.
+        # Mirror the frontend's behavior (3d.js: isValidElev → fill with the
+        # minimum valid value) so height_at() always returns a finite number.
+        arr = raw.array
+        valid = np.isfinite(arr) & (arr > -500.0) & (arr < 9000.0)
+        if not valid.all():
+            fill = float(arr[valid].min()) if valid.any() else 0.0
+            arr  = np.where(valid, arr, fill).astype(np.float32, copy=False)
+            log.info(
+                "heightmap: filled %d nodata cells with %.1fm",
+                int((~valid).sum()), fill,
+            )
+        self.array = arr
+
         self.target_lat = target_lat
         self.target_lon = target_lon
         self.lon_min = raw.lon_min
@@ -155,13 +188,21 @@ class Heightmap:
 
         self.height_px, self.width_px = self.array.shape
 
-        m_per_deg_lon = _M_PER_DEG_LAT * math.cos(math.radians(target_lat))
+        # Sim-coord pixel scale: the frontend stretches the entire heightmap
+        # over `sim_extent_m × sim_extent_m` of display space (currently
+        # 10 km × 10 km), regardless of the heightmap's real geographic
+        # extent (currently ~60 km from the height server's RADIUS_KM=30).
+        # Using the geographic scale here would make `height_at(x, y)`
+        # sample real terrain `geographic_extent / sim_extent_m`× further
+        # out than the on-screen mesh vertex at the same sim XY, leaving
+        # the target marker visually below the rendered ground.
+        self.m_per_px_x = sim_extent_m / self.width_px
+        self.m_per_px_y = sim_extent_m / self.height_px
+
+        # The target's pixel position is still derived from the bbox so we
+        # don't assume the height server centered perfectly on (lat, lon).
         bbox_dlon = self.lon_max - self.lon_min
         bbox_dlat = self.lat_max - self.lat_min
-
-        self.m_per_px_x = (bbox_dlon * m_per_deg_lon) / self.width_px
-        self.m_per_px_y = (bbox_dlat * _M_PER_DEG_LAT) / self.height_px
-
         self.target_col = ((target_lon - self.lon_min) / bbox_dlon) * (self.width_px - 1)
         self.target_row = ((self.lat_max - target_lat) / bbox_dlat) * (self.height_px - 1)
 

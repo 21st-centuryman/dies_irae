@@ -9,8 +9,8 @@ import websockets
 
 
 async def main():
-    ws_url = "ws://127.0.0.1:3000/simulation/fake/stream"
-    put_url = "http://127.0.0.1:3000/scenario/start"
+    ws_url = "ws://0.0.0.0:3000/simulation/fake/stream"
+    put_url = "http://0.0.0.0:3000/scenario/start"
     payload = json.dumps({
         "drone_count": 10, "pct_attack": 50, "pct_recon": 50,
         "pct_short": 50, "pct_long": 50, "scenario_type": "allatonce",

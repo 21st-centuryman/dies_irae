@@ -165,7 +165,27 @@ REACH_THRESHOLD_M    = 30.0
 SPAWN_ALTITUDE_AGL_M = 100.0
 DEFAULT_RING_RADIUS_M = 5000.0
 MIN_AGL_CLEARANCE_M  = 0.0
-MAX_SIM_DURATION_S   = 600.0
+
+# Boids-style terrain avoidance: directional-corridor search.
+# Each step we sweep a fan of candidate headings in the horizontal plane,
+# ray-march the heightmap along each, and pick the lowest-cost corridor
+# (blockedness + bearing-to-target misalignment + heading-change penalty).
+# The chosen corridor produces a single desired velocity, which is then
+# steered toward in the usual `(desired - current) / dt` clamped fashion.
+TERRAIN_SAFETY_AGL_M  = 50.0
+HEADING_FAN_DEG       = (
+    0.0, 10.0, -10.0, 20.0, -20.0, 35.0, -35.0,
+    55.0, -55.0, 80.0, -80.0, 120.0, -120.0,
+)
+HORIZON_TIME_S        = 8.0   # how far along each candidate to ray-march
+PROBE_COUNT           = 10    # number of samples per ray
+NEAR_HORIZON_TIME_S   = 3.0   # window used to set terrain-follow altitude
+SOFT_MARGIN_M         = 20.0  # extra clearance band that still scores zero
+COST_DEFICIT_WEIGHT   = 10.0  # per meter of clearance deficit
+COST_GOAL_WEIGHT      = 50.0  # per radian of bearing-to-target misalignment
+COST_TURN_WEIGHT      = 30.0  # per radian of heading change (hysteresis)
+MAX_YAW_RATE_DEG_S    = 120.0 # cap on heading change per second
+ALT_TRACK_TAU_S       = 1.5   # gap-closing time constant for vertical track
 
 
 @dataclass(frozen=True)
@@ -237,14 +257,140 @@ class SimEngine:
         self.finished    = False
         self.finish_reason: str | None = None
 
+    def _choose_desired_velocity(
+        self, pos: np.ndarray, vel: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Pick a desired velocity by scoring a fan of candidate headings.
+
+        For each drone:
+          1. Build C candidate headings = current_heading + fan_offsets.
+          2. Ray-march the heightmap along each candidate out to a horizon
+             of `max_speed * HORIZON_TIME_S`. P samples per ray.
+          3. Compare required altitude (terrain + safety) against the
+             drone's flyable altitude profile (assuming max climb). The
+             worst sample on each ray is its blockedness.
+          4. Cost = blockedness + |bearing-to-target offset| + |turn|.
+             Lowest cost wins.
+          5. Apply yaw-rate limit between current heading and chosen heading.
+          6. Vertical desired velocity tracks (peak terrain in the near
+             portion of the chosen corridor) + safety AGL.
+
+        Returns (desired_v, avoiding_mask). desired_v has shape (n, 3).
+        """
+        n = pos.shape[0]
+        rows = np.arange(n)
+
+        # ── 1. Reference headings ─────────────────────────────────────────
+        h_speed = np.linalg.norm(vel[:, :2], axis=1)
+        moving  = h_speed > 1.0
+        cur_theta = np.zeros(n, dtype=np.float32)
+        cur_theta[moving] = np.arctan2(vel[moving, 1], vel[moving, 0])
+        # Bearing from each drone to the target (XY).
+        to_tgt = self._target_3d[:2] - pos[:, :2]
+        tgt_theta = np.arctan2(to_tgt[:, 1], to_tgt[:, 0]).astype(np.float32)
+        # Cold start (drone stationary): treat target bearing as current heading
+        # so the fan is centered on the goal direction.
+        cur_theta = np.where(moving, cur_theta, tgt_theta)
+
+        fan = np.array([math.radians(d) for d in HEADING_FAN_DEG], dtype=np.float32)
+        cand_theta = cur_theta[:, None] + fan[None, :]              # (n, C)
+        cand_dx    = np.cos(cand_theta).astype(np.float32)
+        cand_dy    = np.sin(cand_theta).astype(np.float32)
+
+        # ── 2. Ray-march samples ──────────────────────────────────────────
+        horizon_m = self.max_speed * HORIZON_TIME_S
+        probe_d   = np.linspace(
+            horizon_m / PROBE_COUNT, horizon_m, PROBE_COUNT, dtype=np.float32,
+        )                                                            # (P,)
+
+        # Probe positions broadcast to (n, C, P).
+        probe_x = pos[:, None, None, 0] + cand_dx[:, :, None] * probe_d[None, None, :]
+        probe_y = pos[:, None, None, 1] + cand_dy[:, :, None] * probe_d[None, None, :]
+        terrain = self.heightmap.height_at_batch(
+            probe_x.reshape(-1), probe_y.reshape(-1),
+        ).reshape(probe_x.shape).astype(np.float32)                  # (n, C, P)
+
+        # ── 3. Blockedness per candidate ──────────────────────────────────
+        # Drone's flyable altitude over time, assuming max climb from now,
+        # capped at the drone's altitude ceiling.
+        max_alt   = float(DRONE_TYPES[self.drone_type].max_alt_m)
+        probe_t   = (probe_d / self.max_speed).astype(np.float32)    # (P,)
+        flyable_z = pos[:, None, None, 2] + self.max_speed * probe_t[None, None, :]
+        flyable_z = np.minimum(flyable_z, np.float32(max_alt))       # (n, 1, P) bcast
+
+        deficit       = (terrain + TERRAIN_SAFETY_AGL_M) - flyable_z  # (n, C, P)
+        worst_deficit = deficit.max(axis=2)                           # (n, C)
+
+        # ── 4. Cost ───────────────────────────────────────────────────────
+        # Wrap angle differences into [-pi, pi].
+        def _wrap(a: np.ndarray) -> np.ndarray:
+            return (a + np.pi) % (2.0 * np.pi) - np.pi
+
+        goal_diff = _wrap(cand_theta - tgt_theta[:, None])
+        turn_diff = _wrap(cand_theta - cur_theta[:, None])
+
+        # Soft-margin band: corridors with < SOFT_MARGIN_M of clearance above
+        # the safety buffer still score nonzero, biasing toward roomy paths.
+        blockedness = np.maximum(worst_deficit + SOFT_MARGIN_M, 0.0)
+
+        cost = (
+            COST_DEFICIT_WEIGHT * blockedness
+            + COST_GOAL_WEIGHT  * np.abs(goal_diff)
+            + COST_TURN_WEIGHT  * np.abs(turn_diff)
+        )                                                             # (n, C)
+
+        best_idx       = np.argmin(cost, axis=1)                      # (n,)
+        chosen_theta   = cand_theta[rows, best_idx]
+        chosen_deficit = worst_deficit[rows, best_idx]
+
+        # ── 5. Yaw-rate limit ─────────────────────────────────────────────
+        max_step  = math.radians(MAX_YAW_RATE_DEG_S) * SIM_DT
+        delta     = _wrap(chosen_theta - cur_theta)
+        delta     = np.clip(delta, -max_step, max_step)
+        new_theta = cur_theta + delta
+
+        desired_vx = np.cos(new_theta).astype(np.float32) * self.max_speed
+        desired_vy = np.sin(new_theta).astype(np.float32) * self.max_speed
+
+        # ── 6. Vertical: terrain-follow within near horizon of chosen ray ─
+        near_count = max(1, int(round(PROBE_COUNT * NEAR_HORIZON_TIME_S / HORIZON_TIME_S)))
+        chosen_terrain = terrain[rows, best_idx, :]                   # (n, P)
+        near_peak      = chosen_terrain[:, :near_count].max(axis=1)
+        desired_z      = np.minimum(near_peak + TERRAIN_SAFETY_AGL_M, np.float32(max_alt))
+        # Also pull toward target altitude when no terrain pressure (so the
+        # drone descends into the target rather than cruising high forever).
+        # Blend: alt_target = max(terrain_follow, descent_toward_target).
+        # Closing rate proportional to remaining XY distance keeps it gentle.
+        dist_xy = np.linalg.norm(to_tgt, axis=1)
+        glide_z = self._target_3d[2] + np.maximum(dist_xy * 0.05, 0.0)  # ~3° glideslope
+        desired_z = np.maximum(desired_z, np.minimum(glide_z, pos[:, 2]))
+        # Predictive vz that closes the altitude gap over ALT_TRACK_TAU_S.
+        desired_vz = np.clip(
+            (desired_z - pos[:, 2]) / ALT_TRACK_TAU_S,
+            -self.max_speed, self.max_speed,
+        ).astype(np.float32)
+
+        desired_v = np.empty((n, 3), dtype=np.float32)
+        desired_v[:, 0] = desired_vx
+        desired_v[:, 1] = desired_vy
+        desired_v[:, 2] = desired_vz
+
+        # Avoidance is "in effect" whenever the chosen corridor still has any
+        # blockage, OR the chosen heading deviates meaningfully from the bee
+        # line to the target (we deflected to find a clear path).
+        chosen_goal_diff = _wrap(chosen_theta - tgt_theta)
+        avoiding = (chosen_deficit > 0.0) | (np.abs(chosen_goal_diff) > math.radians(5.0))
+        return desired_v, avoiding
+
     def step(self) -> None:
         if self.finished:
             return
 
-        n      = self.state.n
-        pos    = self.state.positions[:n]
-        vel    = self.state.velocities[:n]
-        states = self.state.states[:n]
+        n       = self.state.n
+        pos     = self.state.positions[:n]
+        vel     = self.state.velocities[:n]
+        states  = self.state.states[:n]
+        intents = self.state.intents[:n]
 
         active = states == ACTIVE
         if not active.any():
@@ -252,29 +398,35 @@ class SimEngine:
             self.finish_reason = "no_active_drones"
             return
 
-        delta   = self._target_3d - pos
-        dist_xy = np.sqrt(delta[:, 0] ** 2 + delta[:, 1] ** 2)  # XY only
-
+        # Reach check first so we don't steer drones that are already there.
+        delta       = self._target_3d - pos
+        dist_xy     = np.sqrt(delta[:, 0] ** 2 + delta[:, 1] ** 2)
         reached_now = active & (dist_xy < REACH_THRESHOLD_M)
         if reached_now.any():
             idx = np.where(reached_now)[0]
             states[idx] = REACHED
             vel[idx]    = 0.0
 
-        seeking = active & ~reached_now
-        if seeking.any():
-            d     = delta[seeking]
-            dist3 = np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-6)
-            desired_vel   = (d / dist3) * self.max_speed
-            desired_accel = (desired_vel - vel[seeking]) / SIM_DT
-            accel_mag     = np.linalg.norm(desired_accel, axis=1, keepdims=True)
-            accel_scale   = np.minimum(1.0, self.max_accel / np.maximum(accel_mag, 1e-6))
-            desired_accel *= accel_scale
-            vel[seeking]  += desired_accel * SIM_DT
-            speed          = np.linalg.norm(vel[seeking], axis=1, keepdims=True)
-            vel[seeking]  *= np.minimum(1.0, self.max_speed / np.maximum(speed, 1e-6))
-            pos[seeking]  += vel[seeking] * SIM_DT
+        steering = active & ~reached_now
+        if steering.any():
+            # Single desired velocity from corridor search (seek + avoid fused).
+            desired_v, avoiding = self._choose_desired_velocity(pos, vel)
 
+            # Steering accel = (desired − current) / dt, clamped at max_accel.
+            accel = (desired_v - vel) / SIM_DT
+            mag   = np.linalg.norm(accel, axis=1, keepdims=True)
+            accel *= np.minimum(1.0, self.max_accel / np.maximum(mag, 1e-6))
+
+            vel[steering] += accel[steering] * SIM_DT
+            speed = np.linalg.norm(vel[steering], axis=1, keepdims=True)
+            vel[steering] *= np.minimum(1.0, self.max_speed / np.maximum(speed, 1e-6))
+            pos[steering] += vel[steering] * SIM_DT
+
+            intents[steering & avoiding]  = INTENT_AVOIDING
+            intents[steering & ~avoiding] = INTENT_SEEKING
+
+        # Hard floor failsafe: avoidance is predictive and can still be beaten
+        # by extreme slopes. Never let a drone clip below the ground.
         ground = self.heightmap.height_at_batch(pos[:, 0], pos[:, 1])
         min_z  = ground + MIN_AGL_CLEARANCE_M
         below  = pos[:, 2] < min_z
@@ -287,6 +439,3 @@ class SimEngine:
         if (states == REACHED).any():
             self.finished      = True
             self.finish_reason = "reached_target"
-        elif self.t > MAX_SIM_DURATION_S:
-            self.finished      = True
-            self.finish_reason = "max_duration"

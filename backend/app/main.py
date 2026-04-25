@@ -112,6 +112,34 @@ def _build_engine(heightmap: Heightmap, config: ScenarioConfig) -> SimEngine:
     )
 
 
+async def _ensure_heightmap_for(app: FastAPI, lat: float, lon: float) -> Heightmap:
+    """Return a heightmap centered on (lat, lon), reloading if needed.
+
+    The frontend fetches its own heightmap for whatever coordinate the user
+    picks on the Leaflet map, but the backend's heightmap is bound at
+    process start. Without this, every scenario after the first uses the
+    default location's terrain — so the drone's `target_z` (sampled from
+    the wrong tile) drifts arbitrarily relative to the rendered ground.
+    """
+    cur: Heightmap | None = getattr(app.state, "heightmap", None)
+    if (
+        cur is not None
+        and abs(cur.target_lat - lat) < 1e-6
+        and abs(cur.target_lon - lon) < 1e-6
+    ):
+        return cur
+    log.info("loading heightmap for (%.4f, %.4f)", lat, lon)
+    raw = await asyncio.to_thread(load_heightmap, lat, lon)
+    new_hm = Heightmap(raw, lat, lon)
+    app.state.heightmap = new_hm
+    log.info(
+        "heightmap reloaded: %dx%d, %.2fm/px x %.2fm/px (sim coords)",
+        new_hm.width_px, new_hm.height_px,
+        new_hm.m_per_px_x, new_hm.m_per_px_y,
+    )
+    return new_hm
+
+
 async def _engine_loop(engine: SimEngine) -> None:
     next_tick = time.monotonic()
     try:
@@ -160,11 +188,13 @@ async def _start_scenario(config: ScenarioConfig, request: Request) -> dict[str,
         print(f"  {k:>15} : {v}")
     print("=" * 60, flush=True)
 
+    heightmap = await _ensure_heightmap_for(request.app, config.lat, config.lon)
+
     async with _scenario_lock:
         if _active_scenario is not None and _active_scenario.engine_task is not None:
             _active_scenario.engine_task.cancel()
 
-        engine  = _build_engine(request.app.state.heightmap, config)
+        engine  = _build_engine(heightmap, config)
         session = ScenarioSession(config=config, engine=engine)
         session.engine_task = asyncio.create_task(_engine_loop(engine))
         _active_scenario = session
