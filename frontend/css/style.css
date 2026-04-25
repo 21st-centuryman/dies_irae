@@ -7,26 +7,44 @@
 }
 
 :root {
-  --background: #0D1117;
-
-  --container: #F6F7F9;
-  --container-border: rgba(17, 20, 24, 0.15);
-
-  --text-white: #F6F7F9;
-  --text-black: #1C2127;
-
-  --button: #2F343C;
-  --button-hover: #252A31;
+  /* Colors for threejs lights — theme-independent */
+  --ambient: #d8cfc4;
+  --sun: #fffaf0;
+  --fill: #aabbdd;
 }
 
+html.light {
+  --background: #F6F7F9;
+  --container-border: rgba(17, 20, 24, 0.15);
+  --text: #1C2127;
+  --button: #2F343C;
+  --button-hover: #252A31;
+  --button-text: #F6F7F9;
+  --map-bg: #E8EDF5;
+  --contour: #ffffff;
+  --ground: #dce0e8;
+}
+
+html.dark {
+  --background: #0D1117;
+  --container-border: rgba(246, 247, 249, 0.12);
+  --text: #F6F7F9;
+  --button: #1e2530;
+  --button-hover: #161c27;
+  --button-text: #F6F7F9;
+  --map-bg: #0D1117;
+  --contour: #e6e9ef;
+  --ground: #5b6078;
+}
+
+html,
 body {
   background: var(--background);
-  color: var(--text-white);
+  color: var(--text);
   font-family: 'Geist', 'IBM Plex Mono', -apple-system, 'Segoe UI', sans-serif;
   min-height: 100dvh;
   overflow-x: hidden;
 }
-
 
 input,
 select {
@@ -34,6 +52,7 @@ select {
   border: 1px solid var(--container-border);
   border-radius: 6px;
   padding: 5px 10px;
+  color: var(--text);
 }
 
 /* ── Canvas fixed behind everything ── */
@@ -51,8 +70,8 @@ select {
 
 /* ── Tables ── */
 .table {
-  background-color: var(--container);
-  color: var(--text-black);
+  background-color: var(--background);
+  color: var(--text);
   border: 4px solid var(--container-border);
   border-radius: 12px;
   padding: 30px 20px 20px 20px;
@@ -70,7 +89,7 @@ select {
   right: 8px;
   background: none;
   border: none;
-  color: var(--text-black);
+  color: var(--text);
   font-size: 16px;
   line-height: 1;
   padding: 2px 4px;
@@ -88,7 +107,7 @@ select {
   padding: 8px;
   border: none;
   border-radius: 8px;
-  color: var(--text-white);
+  color: var(--button-text);
   background-color: var(--button);
   margin-bottom: 10px;
 
@@ -98,20 +117,103 @@ select {
   }
 }
 
-/* ── Senario table ── */
-#scenarioTable {
+/* ── Left panel column ── */
+.left-panels {
+  position: fixed;
+  top: 60px;
   left: 40px;
-}
-
-#scenarioDropdown {
-  margin: 10px 0;
-  width: 100%;
-  border-radius: 8px;
-}
-
-.server {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 12px;
+  z-index: 1;
+  max-height: calc(100dvh - 80px);
+  overflow-y: auto;
+
+  .table {
+    position: relative;
+    top: auto;
+    left: auto;
+  }
+}
+
+/* ── Scenario table ── */
+#scenarioTable {
+  align-items: stretch;
+  gap: 10px;
+  min-width: 260px;
+}
+
+/* ── Setup table ── */
+#setupTable {
+  align-items: stretch;
+  gap: 10px;
+  min-width: 260px;
+}
+
+.hint {
+  font-size: 75%;
+  opacity: 0.5;
+  text-align: center;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+
+  label {
+    font-size: 75%;
+    opacity: 0.6;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+}
+
+.pct-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  input {
+    width: 64px;
+  }
+
+  span {
+    font-size: 85%;
+    opacity: 0.7;
+  }
+}
+
+.field.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.toggle-group {
+  display: flex;
+  gap: 4px;
+}
+
+.toggle {
+  flex: 1;
+  padding: 5px 4px;
+  border: 1px solid var(--container-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 80%;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+
+  &.active {
+    background: var(--button);
+    color: var(--button-text);
+    border-color: transparent;
+  }
+
+  &:hover:not(.active) {
+    background: var(--container-border);
+  }
 }
 
 /* ── Sweden map ── */
@@ -127,7 +229,7 @@ select {
 }
 
 #sweden-map {
-  background: var(--background);
+  background: var(--map-bg);
   width: 100%;
   height: 100%;
 
@@ -137,7 +239,7 @@ select {
 }
 
 #terrainStatus {
-  color: var(--text-black);
+  color: var(--text);
 }
 
 #coordInput {
@@ -148,7 +250,6 @@ select {
 }
 
 /* ── Map table ── */
-
 #mapTable {
   right: 40px;
   transition: transform 5000ms cubic-bezier(0.16, 1, 0.3, 1),
@@ -162,28 +263,49 @@ select {
       flex: 1;
       min-height: 0;
     }
-
   }
 }
 
 /* ── Header ── */
 nav {
   display: flex;
-  justify-content: left;
+  justify-content: space-between;
   align-items: center;
   padding: 6px 10px;
-  background-color: var(--container);
+  background-color: var(--background);
 
   * {
     margin: 0 10px;
-    color: var(--text-black);
+    color: var(--text);
     font-size: 90%;
   }
-
 
   .logo {
     font-weight: 700;
     letter-spacing: -0.02em;
-    color: var(--text-black);
+    color: var(--text);
   }
+
+  .leftItems,
+  .rightItems {
+    display: flex;
+    align-items: center;
+  }
+}
+
+/* ── Mode toggle visibility ── */
+html.light #lightMode {
+  display: none;
+}
+
+html.light #darkMode {
+  display: inline;
+}
+
+html.dark #lightMode {
+  display: inline;
+}
+
+html.dark #darkMode {
+  display: none;
 }

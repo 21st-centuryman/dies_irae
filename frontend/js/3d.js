@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const HEIGHT_SERVER = 'http://localhost:8000';
+const HEIGHT_SERVER = `http://${window.location.hostname}:8000`;
 
 // Downsample the 4096×4096 source to this resolution for the mesh.
 // 512 → 511×511 quads (~520k triangles), smooth and fast.
-const GRID = 512;
+const GRID = 1024;
+//const GRID = 4096;
 
 // Vertical exaggeration — makes elevation differences easier to read.
 const HEIGHT_SCALE = 55;
@@ -14,13 +15,18 @@ const HEIGHT_SCALE = 55;
 const WORLD_SIZE = 1000;
 
 // ─── Colors ──────────────────────────────────────────────────────────────────
-const _css = getComputedStyle(document.documentElement);
-const COLOR_BG = _css.getPropertyValue('--container').trim();  // scene background, terrain rim fade
-const COLOR_AMBIENT = 0xd8cfc4;  // ambient light
-const COLOR_SUN = 0xfffaf0;  // directional sun light
-const COLOR_FILL = 0xaabbdd;  // fill light (cool blue from opposite side)
-const COLOR_CONTOUR = 0xffffff;  // contour line color
-const COLOR_GROUND = 0xC2C1C5;
+function readColors() {
+  const v = getComputedStyle(document.documentElement);
+  return {
+    ambient: v.getPropertyValue('--ambient').trim(),
+    sun: v.getPropertyValue('--sun').trim(),
+    fill: v.getPropertyValue('--fill').trim(),
+    bg: v.getPropertyValue('--background').trim(),
+    contour: v.getPropertyValue('--contour').trim(),
+    ground: v.getPropertyValue('--ground').trim(),
+  };
+}
+let color = readColors();
 
 // Convert a hex color (number or CSS string like "#0D1117") to a GLSL vec3 literal.
 function hexToVec3(hex) {
@@ -37,6 +43,7 @@ const renderer = new THREE.WebGLRenderer({
   antialias: true,
   canvas: document.getElementById('bg-canvas'),
 });
+renderer.setClearColor(new THREE.Color(color.bg), 1);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -47,7 +54,7 @@ renderer.toneMappingExposure = 0.9;
 // ─── Scene ───────────────────────────────────────────────────────────────────
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(COLOR_BG);
+scene.background = new THREE.Color(color.bg);
 
 // ─── Camera + controls ───────────────────────────────────────────────────────
 
@@ -68,10 +75,10 @@ controls.maxPolarAngle = Math.PI * 0.52; // prevent going below ground
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
-const ambient = new THREE.AmbientLight(COLOR_AMBIENT, 2.0);
+const ambient = new THREE.AmbientLight(color.ambient, 2.0);
 scene.add(ambient);
 
-const sun = new THREE.DirectionalLight(COLOR_SUN, 3.2);
+const sun = new THREE.DirectionalLight(color.sun, 3.2);
 sun.position.set(400, 700, 300);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -84,7 +91,7 @@ sun.shadow.camera.bottom = -800;
 sun.shadow.bias = -0.0005;
 scene.add(sun);
 
-const fill = new THREE.DirectionalLight(COLOR_FILL, 0.8);
+const fill = new THREE.DirectionalLight(color.fill, 0.8);
 fill.position.set(-300, 200, -400);
 scene.add(fill);
 
@@ -128,20 +135,20 @@ function decodeFloat16Buffer(buffer) {
 const CONTOUR_SPACING = HEIGHT_SCALE / 14;
 
 const terrainVertexShader = /* glsl */`
+  attribute float aNodata;
   varying float vHeight;
-  varying float vFade;
+  varying float vDist;
   varying vec3  vWorldNormal;
+  varying float vNodata;
 
   void main() {
     vHeight      = position.y;
+    vNodata      = aNodata;
     vWorldNormal = normalize(mat3(modelMatrix) * normal);
 
-    // Normalised XZ coords for edge-fade (same formula as CPU side).
-    float nx   = (position.x / ${WORLD_SIZE.toFixed(1)}) * 2.0;
-    float nz   = (position.z / ${WORLD_SIZE.toFixed(1)}) * 2.0;
-    float dist = sqrt(nx * nx + nz * nz);
-    float t    = clamp((dist - 0.82) / 0.20, 0.0, 1.0);
-    vFade      = 1.0 - t * t * (3.0 - 2.0 * t);
+    float nx = (position.x / ${WORLD_SIZE.toFixed(1)}) * 2.0;
+    float nz = (position.z / ${WORLD_SIZE.toFixed(1)}) * 2.0;
+    vDist    = sqrt(nx * nx + nz * nz);
 
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
@@ -149,40 +156,42 @@ const terrainVertexShader = /* glsl */`
 
 const terrainFragmentShader = /* glsl */`
   varying float vHeight;
-  varying float vFade;
+  varying float vDist;
   varying vec3  vWorldNormal;
+  varying float vNodata;
 
   uniform float uContourSpacing;
+  uniform vec3  uGroundColor;
+  uniform vec3  uContourColor;
 
   void main() {
-    // Simple diffuse shading so the terrain still reads as 3-D.
-    vec3  lightDir = normalize(vec3(0.45, 0.80, 0.35));
-    float diffuse  = max(dot(normalize(vWorldNormal), lightDir), 0.0);
-    float light    = 0.52 + diffuse * 0.48;
+    if (vDist > 1.0) discard;
 
-    // Flat grey terrain, shaded.
-    vec3 terrainColor = ${hexToVec3(COLOR_GROUND)};
+    // Nodata / water cells: render flat ground color, no contour lines.
+    if (vNodata > 0.5) {
+      gl_FragColor = vec4(uGroundColor, 1.0);
+      return;
+    }
 
-    // Contour lines: darken wherever height is near a multiple of spacing.
+    vec3  lightDir    = normalize(vec3(-0.50, 0.70, 0.50));
+    float diffuse     = max(dot(normalize(vWorldNormal), lightDir), 0.0);
+    float light       = 0.52 + diffuse * 0.48;
+
+    vec3 terrainColor = uGroundColor * light;
+
     float contour   = mod(vHeight, uContourSpacing);
-    float lineWidth = fwidth(vHeight) * 1.5;
+    float lineWidth = max(fwidth(vHeight) * 1.5, 1e-4);
     float line      = 1.0 - smoothstep(0.0, lineWidth,
                         min(contour, uContourSpacing - contour));
-    line *= vFade; // fade lines out at the rim too
 
-    vec3 color = mix(terrainColor, ${hexToVec3(COLOR_CONTOUR)}, line);
-
-    // Blend toward the scene background at the rim.
-    vec3 bgColor = ${hexToVec3(COLOR_BG)};
-    color = mix(bgColor, color, vFade);
-
-    gl_FragColor = vec4(color, 1.0);
+    gl_FragColor = vec4(mix(terrainColor, uContourColor, line), 1.0);
   }
 `;
 
 // ─── Terrain mesh ────────────────────────────────────────────────────────────
 
 let terrain = null;
+let lastHeights = null;
 
 // Realistic Earth elevation bounds.  Anything outside these is a nodata
 // sentinel (e.g. -9999, -32768, 0-fill) and must be discarded.
@@ -239,11 +248,15 @@ function buildTerrain(heights, srcW, srcH) {
     `elevation range: ${minH.toFixed(1)} – ${maxH.toFixed(1)} m`
   );
 
+  // Record nodata cells before filling — used by the shader to skip contour lines.
+  const nodataFlag = new Float32Array(GRID * GRID);
   for (let i = 0; i < samples.length; i++) {
-    if (isNaN(samples[i])) samples[i] = minH;
+    if (isNaN(samples[i])) { nodataFlag[i] = 1.0; samples[i] = minH; }
   }
 
   const hRange = (maxH - minH) || 1;
+  _terrainMinH = minH;
+  _terrainHRange = hRange;
 
   const geo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, GRID - 1, GRID - 1);
   geo.rotateX(-Math.PI / 2);
@@ -254,23 +267,18 @@ function buildTerrain(heights, srcW, srcH) {
     const gy = Math.floor(i / GRID);
     const gx = i % GRID;
 
-    // Normalised coords: -1 → +1 in each axis.
-    const nx = (gx / (GRID - 1)) * 2 - 1;
-    const ny = (gy / (GRID - 1)) * 2 - 1;
-    const dist = Math.sqrt(nx * nx + ny * ny);
-
-    // fade = 1 inside the circle, smoothly falls to 0 at the edge.
-    const fade = 1 - smoothstep(0.82, 1.02, dist);
-
     const raw = samples[i];
-    pos.setY(i, ((raw - minH) / hRange) * HEIGHT_SCALE * fade);
+    pos.setY(i, ((raw - minH) / hRange) * HEIGHT_SCALE);
   }
 
+  geo.setAttribute('aNodata', new THREE.BufferAttribute(nodataFlag, 1));
   geo.computeVertexNormals();
 
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       uContourSpacing: { value: CONTOUR_SPACING },
+      uGroundColor: { value: new THREE.Color(color.ground) },
+      uContourColor: { value: new THREE.Color(color.contour) },
     },
     vertexShader: terrainVertexShader,
     fragmentShader: terrainFragmentShader,
@@ -286,6 +294,7 @@ function buildTerrain(heights, srcW, srcH) {
   terrain.receiveShadow = true;
   terrain.castShadow = false;
   scene.add(terrain);
+
 
   // Reposition camera to frame the loaded terrain.
   const midY = HEIGHT_SCALE * 0.35;
@@ -340,7 +349,9 @@ async function fetchTerrain() {
 
     status.textContent = 'building mesh…';
     await new Promise(r => setTimeout(r, 0));
+    lastHeights = { heights, w, h };
     const { coverage } = buildTerrain(heights, w, h);
+    document.dispatchEvent(new CustomEvent('terrainReady'));
 
     status.className = coverage < 50 ? 'loading' : 'ok';
     status.textContent = `${w}×${h} → ${GRID}×${GRID}  (${coverage}% coverage)`;
@@ -353,4 +364,21 @@ async function fetchTerrain() {
   }
 }
 
+let _terrainMinH = 0;
+let _terrainHRange = 1;
+export function getTerrainElevRange() { return { minH: _terrainMinH, hRange: _terrainHRange }; }
+
+export { scene, WORLD_SIZE, HEIGHT_SCALE, camera, renderer };
+export function getTerrain() { return terrain; }
+
 document.addEventListener('fetchTerrain', fetchTerrain);
+
+document.addEventListener('themeChange', () => {
+  color = readColors();
+  scene.background = new THREE.Color(color.bg);
+  renderer.setClearColor(new THREE.Color(color.bg), 1);
+  if (terrain) {
+    terrain.material.uniforms.uGroundColor.value.set(color.ground);
+    terrain.material.uniforms.uContourColor.value.set(color.contour);
+  }
+});

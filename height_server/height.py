@@ -132,7 +132,7 @@ def download_files(urls):
 
 _cache: OrderedDict = OrderedDict()
 _cache_lock = threading.Lock()
-_CACHE_MAX = 8  # max cached locations (~256 MB at 4096² float16)
+_CACHE_MAX = 3  # max cached locations (~256 MB at 4096² float16)
 
 
 def _cache_key(lat: float, lon: float) -> tuple:
@@ -220,6 +220,10 @@ def _load_height_array_uncached(lat: float, lon: float):
 
         valid_after = np.count_nonzero(~np.isnan(resampled))
         print(f"[info] resampled shape: {resampled.shape}, valid cells: {valid_after}")
+
+        min_h = float(np.nanmin(resampled))
+        resampled -= min_h
+        print(f"[info] normalised heights: subtracted min={min_h:.2f}m, new range 0–{float(np.nanmax(resampled)):.2f}m")
 
         height = resampled.astype(np.float16)
 

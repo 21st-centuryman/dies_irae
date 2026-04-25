@@ -1,69 +1,158 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="./css/base.css">
-  <link rel="stylesheet" href="./css/style.css">
-  <title>Dies Irae</title>
-</head>
-<body>
+<!doctype html>
+<html lang="en" class="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="./css/style.css" />
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+    <title>Dies Irae</title>
+  </head>
+  <body>
+    <!-- Three.js background canvas -->
+    <canvas id="bg-canvas"></canvas>
 
-  <!-- Three.js background canvas -->
-  <canvas id="bg-canvas"></canvas>
-
-  <!-- Your actual site content -->
-  <div class="site-content">
-    <nav class="header">
-      <span class="logo">Dies Irae</span>
-      <a id="openScenario" style="cursor:pointer;">Senario</a>
-      <a id="openMap" style="cursor:pointer;">Map</a>
-    </nav>
-
-    <div class="table" id="scenarioTable">
-        <button class="close" id="closeScenario">✕</button>
-        <h4>Select Scenario</h4>
-        <div class="server">
-          <input id="serverInput" type="text" maxlength="32" placeholder="server name" />
-          <input id="serverPort" type="number" min="0" max="65535" step="1" placeholder="server port" />
+    <!-- Your actual site content -->
+    <div class="site-content">
+      <nav class="header">
+        <div class="leftItems">
+          <span class="logo">Dies Irae</span>
+          <a id="openScenario" style="cursor: pointer">Senario</a>
+          <a id="openMap" style="cursor: pointer">Map</a>
+          <a id="openSetup" style="cursor: pointer">Setup</a>
         </div>
-        <select id="scenarioDropdown">
-          <option Value="Dummy Value">Dummy Value</option>
-        </select>
-        <button class="confirmBtn" id="sendScenario">Start Scenario</button>
-        <h6>Status</h6>
-    </div>
+        <div class="rightItems">
+          <a id="darkMode" style="cursor: pointer">☾</a>
+          <a id="lightMode" style="cursor: pointer">☼</a>
+          <a id="speed" style="cursor: pointer">1x</a>
+        </div>
+      </nav>
 
-    <div class="table" id="mapTable">
+      <div class="left-panels">
+        <div class="table" id="scenarioTable">
+          <button class="close" id="closeScenario">✕</button>
+          <h4>Scenario</h4>
+          <div class="field">
+            <label>Drone count</label>
+            <input
+              id="droneCount"
+              type="number"
+              min="1"
+              max="1000"
+              value="10" />
+          </div>
+          <div class="field">
+            <label>Composition</label>
+            <div class="pct-row">
+              <span>Attack</span
+              ><input
+                id="pctAttack"
+                type="number"
+                min="0"
+                max="100"
+                value="50" /><span>%</span> <span>Recon</span
+              ><input
+                id="pctRecon"
+                type="number"
+                min="0"
+                max="100"
+                value="50" /><span>%</span>
+            </div>
+          </div>
+          <div class="field" id="attackTypeField">
+            <label>Attack type</label>
+            <div class="pct-row">
+              <span>Short</span
+              ><input
+                id="pctShort"
+                type="number"
+                min="0"
+                max="100"
+                value="50" /><span>%</span> <span>Long</span>
+              <input
+                id="pctLong"
+                type="number"
+                min="0"
+                max="100"
+                value="50" /><span>%</span>
+            </div>
+          </div>
+          <div class="field">
+            <label>Scenario type</label>
+            <div class="toggle-group" id="scenarioType">
+              <button class="toggle active" data-value="allatonce">
+                All at once
+              </button>
+              <button class="toggle" data-value="wave">Wave</button>
+              <button class="toggle" data-value="spread">Spread</button>
+            </div>
+          </div>
+          <div class="field" id="spawnWindowField">
+            <label>Spawn window</label>
+            <input id="spawnWindow" type="number" min="0" value="0" />
+          </div>
+          <div class="field" id="waveIntervalField">
+            <label>Wave interval</label>
+            <input id="waveInterval" type="number" min="0" value="5" />
+          </div>
+          <div class="field" id="dirField">
+            <label>Directionals</label>
+            <input id="dir" type="string" />
+          </div>
+          <div class="field" id="dirSpreadField">
+            <label>Directional spread</label>
+            <input id="dir_spread" type="number" min="0" value="0" />
+          </div>
+          <button class="confirmBtn" id="sendScenario">Start Scenario</button>
+          <h6 id="scenarioStatus"></h6>
+        </div>
+
+        <div class="table" id="setupTable">
+          <button class="close" id="closeSetup">✕</button>
+          <h4>Set up scene</h4>
+          <div class="toggle-group" id="setupItemType">
+            <button class="toggle active" data-value="radar">Radar</button>
+            <button class="toggle" data-value="lrsam">LR SAM Site</button>
+            <button class="toggle" data-value="srsam">SR SAM Site</button>
+          </div>
+          <p class="hint">Click on the 3D terrain to place</p>
+          <button class="confirmBtn" id="clearSetup">Clear</button>
+        </div>
+      </div>
+      <!-- /.left-panels -->
+
+      <div class="table" id="mapTable">
         <button class="close" id="closeMap">✕</button>
-        <h4>Select Cordinate</h4> 
-        <input id="coordInput" type="text" placeholder="lat, lng" />
+        <h4>Select Cordinate</h4>
+        <input id="coordInput" type="text" value="59.33299, 18.06601" />
+        <input type="hidden" id="lat" value="59.33299" />
+        <input type="hidden" id="lon" value="18.06601" />
         <div id="sweden-map-wrapper">
           <div id="sweden-map"></div>
         </div>
-        <input type="hidden" id="lat" />
-        <input type="hidden" id="lon" />
         <button class="confirmBtn" id="expandMap">Expand Map</button>
         <button class="confirmBtn" id="sendMap">Select Cordinate</button>
         <h6 id="terrainStatus"></h6>
+      </div>
     </div>
 
-  </div>
-
-
-<script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
-    }
-  }
-</script>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
-  <script type="module" src="./js/main.js"></script>
-  <script type="module" src="./js/3d.js"></script>
-</body>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+        }
+      }
+    </script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+    <script type="module" src="./js/main.js"></script>
+    <script type="module" src="./js/3d.js"></script>
+    <script type="module" src="./js/drones.js"></script>
+  </body>
 </html>
