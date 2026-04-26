@@ -154,6 +154,12 @@ export function clearDrones() {
   hideImpactMarker();
 }
 
+// ─── Hit detection ───────────────────────────────────────────────────────────
+// Hit events come from the backend via the WebSocket (drone_hit JSON events).
+// setTargets is kept so main.js can register targets for other purposes.
+
+export function setTargets(_targets) { /* no-op: backend handles hit detection */ }
+
 // ─── Impact marker ────────────────────────────────────────────────────────────
 // Ring on the ground + a short vertical stem — marks the predicted strike point.
 
@@ -239,7 +245,23 @@ connectPredict();
 // ─── WebSocket ───────────────────────────────────────────────────────────────
 
 function handleMessage(ev) {
-  if (typeof ev.data === "string") return;
+  if (typeof ev.data === "string") {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "event") {
+        for (const evt of (msg.events || [])) {
+          if (evt.kind === "scenario_ended") {
+            document.dispatchEvent(new CustomEvent("scenarioEnded", { detail: evt }));
+          } else if (evt.kind === "drone_hit") {
+            document.dispatchEvent(new CustomEvent("droneHit", {
+              detail: { id: evt.id, targetIdx: evt.targetIdx },
+            }));
+          }
+        }
+      }
+    } catch (_) { /* ignore malformed */ }
+    return;
+  }
 
   const list = decodeFrame(ev.data);
   const seen = new Set();

@@ -109,6 +109,15 @@ class DroneState:
         self.n += 1
         return i
 
+    def kill_by_id(self, drone_id: int) -> bool:
+        """Mark a drone DESTROYED by wire ID. Returns True if found."""
+        for i in range(self.n):
+            if self.ids[i] == drone_id and self.states[i] == ACTIVE:
+                self.states[i]     = DESTROYED
+                self.velocities[i] = 0.0
+                return True
+        return False
+
     def to_records(self) -> np.ndarray:
         n   = self.n
         rec = self._records[:n]
@@ -294,7 +303,8 @@ class SimEngine:
         # Seeded RNG drives spawn azimuth (random / dir-jitter modes) and
         # spawn-time draws. With seed=None numpy uses OS entropy; with an
         # int the same scenario parameters reproduce the same scenario.
-        rng = np.random.default_rng(seed)
+        self.seed = int(rng_seed) if (rng_seed := (seed if seed is not None else np.random.default_rng().integers(0, 2**31))) else 0
+        rng = np.random.default_rng(self.seed)
         dirs = list(spawn_dirs_deg) if spawn_dirs_deg else []
         spread = max(0.0, float(dir_spread_deg))
 
@@ -342,6 +352,9 @@ class SimEngine:
         self.t              = 0.0
         self.finished       = False
         self.finish_reason: str | None = None
+        # Populated by step() whenever a drone transitions to REACHED.
+        # Each entry is (drone_id, target_idx). Caller should drain this list.
+        self._newly_reached: list[tuple[int, int]] = []
 
         # Promote any drones whose spawn time is already ≤ 0 (e.g. when
         # spawn_window == 0, every drone enters at t=0).
@@ -578,6 +591,10 @@ class SimEngine:
             idx = np.where(reached_now)[0]
             states[idx] = REACHED
             vel[idx]    = 0.0
+            for i in idx:
+                self._newly_reached.append(
+                    (int(self.state.ids[i]), int(self._drone_target_idx[i]))
+                )
 
         steering = active & ~reached_now
         if steering.any():

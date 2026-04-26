@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.sim import (
-    SIM_DT, STREAM_HZ,
+    SIM_DT, STREAM_HZ, DESTROYED,
     ScenarioConfig, ScenarioSession, SimEngine,
     pack_frame,
 )
@@ -227,6 +227,7 @@ async def _start_scenario(config: ScenarioConfig, request: Request) -> dict[str,
         "target_z":     engine.target_z,
         "max_speed_mps":  engine.max_speed,
         "max_accel_mps2": engine.max_accel,
+        "seed":           engine.seed,
     }
 
 
@@ -249,6 +250,16 @@ async def simulation_status() -> dict[str, Any]:
         "drone_vel":     [float(v) for v in engine.state.velocities[0]],
         "config":        _active_scenario.config.model_dump(),
     }
+
+
+@app.put("/drone/{drone_id}/kill")
+async def kill_drone(drone_id: int) -> dict[str, Any]:
+    """Called by the missile server when a missile scores a kill."""
+    if _active_scenario is None:
+        return {"killed": False, "reason": "no active scenario"}
+    killed = _active_scenario.engine.state.kill_by_id(drone_id)
+    log.info("kill drone %d → %s", drone_id, "destroyed" if killed else "not found / already dead")
+    return {"killed": killed, "drone_id": drone_id}
 
 
 @app.put("/simulation/speed")
@@ -281,9 +292,19 @@ async def simulation_stream(websocket: WebSocket, sim_id: str) -> None:
     frame_number = 0
     try:
         while True:
-            payload = pack_frame(frame_number, engine.t, engine.state.to_records())
+            records = engine.state.to_records()
+            payload = pack_frame(frame_number, engine.t, records[records["state"] != DESTROYED])
             await websocket.send_bytes(payload)
             frame_number += 1
+
+            # Drain and forward any drone-hit events accumulated since last frame.
+            hits, engine._newly_reached = engine._newly_reached, []
+            if hits:
+                hit_events = [
+                    {"kind": "drone_hit", "id": h[0], "targetIdx": h[1]}
+                    for h in hits
+                ]
+                await websocket.send_text(json.dumps({"type": "event", "events": hit_events}))
 
             if engine.finished:
                 event = {"type": "event", "events": [{"kind": "scenario_ended",

@@ -10,7 +10,7 @@ let _simRunning = false;
 
 const _sprites = [];
 const _radarPositions = [];
-const _samPositions = [];
+const _samPositions = []; // [{pos: Vector3, type: "LR"|"SR"}]
 let _radarCount = 0;
 let _samCount = 0;
 const MAX_RADARS = 3;
@@ -73,11 +73,11 @@ function onPointerUp(e) {
     _radarCount++;
   } else if (_type === "lrsam") {
     tex = makeSamTexture("LR", _samCount);
-    _samPositions.push(pt.clone());
+    _samPositions.push({ pos: pt.clone(), type: "LR" });
     _samCount++;
   } else {
     tex = makeSamTexture("SR", _samCount);
-    _samPositions.push(pt.clone());
+    _samPositions.push({ pos: pt.clone(), type: "SR" });
     _samCount++;
   }
 

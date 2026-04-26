@@ -25,6 +25,7 @@
           <a id="openScenario" style="cursor: pointer">Senario</a>
           <a id="openMap" style="cursor: pointer">Map</a>
           <a id="openSetup" style="cursor: pointer">Setup</a>
+          <a id="openHistory" style="cursor: pointer">History</a>
         </div>
         <div class="rightItems">
           <a id="darkMode" style="cursor: pointer">☾</a>
@@ -47,42 +48,6 @@
               value="10" />
           </div>
           <div class="field">
-            <label>Composition</label>
-            <div class="pct-row">
-              <span>Attack</span
-              ><input
-                id="pctAttack"
-                type="number"
-                min="0"
-                max="100"
-                value="50" /><span>%</span> <span>Recon</span
-              ><input
-                id="pctRecon"
-                type="number"
-                min="0"
-                max="100"
-                value="50" /><span>%</span>
-            </div>
-          </div>
-          <div class="field" id="attackTypeField">
-            <label>Attack type</label>
-            <div class="pct-row">
-              <span>Short</span
-              ><input
-                id="pctShort"
-                type="number"
-                min="0"
-                max="100"
-                value="50" /><span>%</span> <span>Long</span>
-              <input
-                id="pctLong"
-                type="number"
-                min="0"
-                max="100"
-                value="50" /><span>%</span>
-            </div>
-          </div>
-          <div class="field">
             <label>Scenario type</label>
             <div class="toggle-group" id="scenarioType">
               <button class="toggle active" data-value="allatonce">
@@ -95,6 +60,13 @@
             <label>Spawn window</label>
             <input id="spawnWindow" type="number" min="0" value="0" />
           </div>
+
+          <!-- hidden inputs keep the JSON payload intact -->
+          <input type="hidden" id="pctAttack"  value="50" />
+          <input type="hidden" id="pctRecon"   value="50" />
+          <input type="hidden" id="pctShort"   value="50" />
+          <input type="hidden" id="pctLong"    value="50" />
+          <input type="hidden" id="waveInterval" value="5" />
           <div class="field" id="dirField">
             <label>Directionals</label>
             <input id="dir" type="string" />
@@ -109,6 +81,28 @@
           </div>
           <button class="confirmBtn" id="sendScenario">Start Scenario</button>
           <h6 id="scenarioStatus"></h6>
+          <h6 id="scenarioSeed"></h6>
+        </div>
+
+        <div class="table" id="historyTable">
+          <button class="close" id="closeHistory">✕</button>
+          <h4>History</h4>
+          <p id="historyCount">0 scenarios</p>
+          <table id="historyTable-inner">
+            <thead>
+              <tr>
+                <th>Radar 1</th>
+                <th>Radar 2</th>
+                <th>Radar 3</th>
+                <th>SR SAM</th>
+                <th>LR SAM</th>
+                <th>Drones</th>
+                <th>Enemy Cost</th>
+                <th>Seed</th>
+              </tr>
+            </thead>
+            <tbody id="historyList"></tbody>
+          </table>
         </div>
 
         <div class="table" id="setupTable">
@@ -117,7 +111,7 @@
           <div class="toggle-group" id="setupItemType">
             <button class="toggle active" data-value="radar">Radar</button>
             <button class="toggle" data-value="lrsam">LR SAM Site</button>
-            <!---<button class="toggle" data-value="srsam">SR SAM Site</button> --->
+            <button class="toggle" data-value="srsam">SR SAM Site</button> 
           </div>
           <p class="hint">Click on the 3D terrain to place</p>
           <button class="confirmBtn" id="clearSetup">Clear</button>

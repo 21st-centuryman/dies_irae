@@ -309,3 +309,41 @@ html.dark #lightMode {
 html.dark #darkMode {
   display: none;
 }
+
+/* ── History table ── */
+#historyTable {
+  align-items: stretch;
+  gap: 10px;
+  min-width: 560px;
+}
+
+#historyTable-inner {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 78%;
+
+  th, td {
+    padding: 4px 8px;
+    text-align: left;
+    border-bottom: 1px solid var(--container-border);
+    white-space: nowrap;
+  }
+
+  th {
+    opacity: 0.6;
+    font-weight: 500;
+  }
+
+  .status-hit {
+    color: #ff4400;
+    span { font-weight: 600; font-size: 90%; }
+  }
+
+  .status-safe {
+    span { opacity: 0.5; font-size: 90%; }
+  }
+
+  tr:last-child td {
+    border-bottom: none;
+  }
+}

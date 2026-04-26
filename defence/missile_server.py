@@ -16,9 +16,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import random
 import time
 from contextlib import asynccontextmanager
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import numpy as np
 import websockets
@@ -114,17 +115,21 @@ def _pack_frame(frame_number: int, missiles: dict) -> bytes:
 # ---------------------------------------------------------------------------
 
 DRONE_WS_URL = "ws://localhost:3000/simulation/fake/stream"
+DRONE_HTTP_URL = "http://localhost:3000"
 HEIGHT_SERVER_URL = "http://10.154.6.177:8000"
-MISSILE_SPEED_MPS = 250.0  # m/s — faster than drones
+MISSILE_SPEED_MPS = 125.0  # m/s base speed
 INTERCEPT_RADIUS_M = 40.0  # metres — close enough counts as a hit
+KILL_PROBABILITY    = 0.4     # LR SAM hit chance
+SR_KILL_PROBABILITY = 0.8     # SR SAM hit chance
+SR_MAX_RANGE_M      = 2000.0  # SR SAM only engages drones within this distance
 SIM_HZ = 60
 SIM_DT = 1.0 / SIM_HZ
 STREAM_HZ = 20
 
 CLIMB_HEIGHT_M = 40.0  # metres to climb straight up before seeking target
 
-# SAM site positions (x, y, z) in metres — set via PUT /sam/positions.
-_sam_positions: list[tuple[float, float, float]] = [(0.0, 0.0, 0.0)]
+# SAM site positions — (x, y, z, type) where type is "LR" or "SR".
+_sam_positions: list[tuple[float, float, float, str]] = [(0.0, 0.0, 0.0, "LR")]
 
 # ---------------------------------------------------------------------------
 # Simple heightmap (bilinear, sim coords: X=East Y=North in metres from origin)
@@ -219,7 +224,8 @@ _frame_number: int = 0
 # (target_id, sam_idx) pairs blocked after terrain collision — cleared on scenario reset.
 _terrain_blocked: set[tuple[int, int]] = set()
 _last_launch_time: dict[int, float] = {}  # sam_idx → monotonic time of last launch
-LAUNCH_INTERVAL_S: float = 2.0           # minimum seconds between launches per site
+LAUNCH_INTERVAL_S: float = 2.0  # minimum seconds between launches per site
+_speed_mult: float = 1.0         # mirrors the frontend speed multiplier
 
 # ---------------------------------------------------------------------------
 # Drone subscriber task
@@ -260,6 +266,23 @@ async def _drone_subscriber() -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _kill_drone(drone_id: int) -> None:
+    """Fire-and-forget PUT to the backend to mark a drone as destroyed."""
+    def _do() -> None:
+        req = Request(
+            f"{DRONE_HTTP_URL}/drone/{drone_id}/kill",
+            method="PUT",
+        )
+        try:
+            with urlopen(req, timeout=5):
+                pass
+        except Exception as e:
+            log.warning("kill request for drone %d failed: %s", drone_id, e)
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _do)
+
+
 async def _missile_sim() -> None:
     global _next_missile_id, _frame_number
     last_tick = time.monotonic()
@@ -270,31 +293,57 @@ async def _missile_sim() -> None:
         dt = now - last_tick
         last_tick = now
 
-        # Spawn at most one missile per SAM site per interval.
         covered = {(m["target_id"], m["sam_idx"]) for m in _missiles.values()}
-        for sam_idx, (sx, sy, sz) in enumerate(_sam_positions):
+        launches = []
+
+        # Decide launches first: one per SAM site, same tick
+        for sam_idx, (sx, sy, sz, sam_type) in enumerate(_sam_positions):
             if now - _last_launch_time.get(sam_idx, 0.0) < LAUNCH_INTERVAL_S:
-                continue  # this site is still on cooldown
-            for drone_id in list(_drone_positions.keys()):
+                continue
+
+            sr_range2 = SR_MAX_RANGE_M ** 2  # compare squared distances
+
+            # Pick the closest drone to this SAM site that isn't already targeted.
+            chosen_drone_id = None
+            best_dist2 = float("inf")
+            for drone_id, (ddx, ddy, ddz) in _drone_positions.items():
                 if (drone_id, sam_idx) in covered:
                     continue
                 if (drone_id, sam_idx) in _terrain_blocked:
                     continue
-                mid = _next_missile_id
-                _next_missile_id += 1
-                _missiles[mid] = {
-                    "target_id": drone_id,
-                    "sam_idx":   sam_idx,
-                    "pos":     [sx, sy, sz],
-                    "vel":     [0.0, 0.0, MISSILE_SPEED_MPS],
-                    "spawn_z": sz,
-                }
-                _last_launch_time[sam_idx] = now
-                log.info(
-                    "missile %d launched at drone %d from SAM %d (%.0f, %.0f, %.0f)",
-                    mid, drone_id, sam_idx, sx, sy, sz,
-                )
-                break  # one missile per site per interval
+                d2 = (ddx - sx) ** 2 + (ddy - sy) ** 2 + (ddz - sz) ** 2
+                if sam_type == "SR" and d2 > sr_range2:
+                    continue  # drone out of SR range
+                if d2 < best_dist2:
+                    best_dist2 = d2
+                    chosen_drone_id = drone_id
+
+            if chosen_drone_id is not None:
+                launches.append((sam_idx, chosen_drone_id, sx, sy, sz, sam_type))
+                covered.add((chosen_drone_id, sam_idx))
+
+        # Commit launches together
+        for sam_idx, drone_id, sx, sy, sz, sam_type in launches:
+            mid = _next_missile_id
+            _next_missile_id += 1
+            _missiles[mid] = {
+                "target_id": drone_id,
+                "sam_idx":   sam_idx,
+                "sam_type":  sam_type,
+                "pos":     [sx, sy, sz],
+                "vel":     [0.0, 0.0, MISSILE_SPEED_MPS],
+                "spawn_z": sz,
+            }
+            _last_launch_time[sam_idx] = now
+            log.info(
+                "missile %d launched at drone %d from SAM %d (%.0f, %.0f, %.0f)",
+                mid,
+                drone_id,
+                sam_idx,
+                sx,
+                sy,
+                sz,
+            )
 
         # Step each missile.
         for mid in list(_missiles.keys()):
@@ -309,29 +358,31 @@ async def _missile_sim() -> None:
             dx, dy, dz = tx - px, ty - py, tz - pz
             dist = (dx * dx + dy * dy + dz * dz) ** 0.5
             if dist < INTERCEPT_RADIUS_M:
-                log.info("missile %d intercepted drone %d", mid, target_id)
+                kill_prob = SR_KILL_PROBABILITY if m.get("sam_type") == "SR" else KILL_PROBABILITY
                 del _missiles[mid]
+                if random.random() < kill_prob:
+                    log.info("missile %d KILLED drone %d", mid, target_id)
+                    asyncio.create_task(_kill_drone(target_id))
+                else:
+                    log.info("missile %d missed drone %d (within radius, no kill)", mid, target_id)
                 continue
 
-            # Smooth launch arc: blend from straight-up at spawn to toward-target
-            # over the first CLIMB_HEIGHT_M of altitude gained.
             t = min((pz - m["spawn_z"]) / CLIMB_HEIGHT_M, 1.0)
-            # Toward-target unit vector
             inv = 1.0 / max(dist, 1e-6)
             tdx, tdy, tdz = dx * inv, dy * inv, dz * inv
-            # Blend: (1-t)*up + t*toward_target, then renormalise
+
             bx = t * tdx
             by = t * tdy
             bz = (1.0 - t) + t * tdz
             bmag = (bx * bx + by * by + bz * bz) ** 0.5
             bx, by, bz = bx / bmag, by / bmag, bz / bmag
 
-            vx, vy, vz = bx * MISSILE_SPEED_MPS, by * MISSILE_SPEED_MPS, bz * MISSILE_SPEED_MPS
+            spd = MISSILE_SPEED_MPS * _speed_mult
+            vx, vy, vz = bx * spd, by * spd, bz * spd
             m["vel"] = [vx, vy, vz]
             new_pos = [px + vx * dt, py + vy * dt, pz + vz * dt]
             m["pos"] = new_pos
 
-            # Terrain collision — destroy missile and block this (drone, SAM) pair.
             if _heightmap is not None:
                 ground_z = _heightmap.height_at(new_pos[0], new_pos[1])
                 if new_pos[2] < ground_z:
@@ -398,29 +449,30 @@ async def root():
     return {"service": "missile-defence", "status": "ok"}
 
 
+@app.put("/simulation/speed")
+async def set_speed(body: dict):
+    global _speed_mult
+    _speed_mult = max(0.0, float(body.get("speed", 1)))
+    return {"speed_mult": _speed_mult}
+
+
 @app.put("/sam/positions")
 async def set_sam_positions(body: dict):
-    """
-    Accept SAM site positions from the frontend.
-    Body: { "positions": [[x1, y1, z1], ...], "lat": ..., "lon": ... }
-    Coordinates are in server metres (same system as drones).
-    lat/lon are the scenario origin — used to fetch the terrain heightmap.
-    """
-    global _sam_positions, _heightmap
+    global _sam_positions, _heightmap, _last_launch_time
     raw = body.get("positions", [[0.0, 0.0, 0.0]])
     _sam_positions = [
-        (float(p[0]), float(p[1]), float(p[2]) if len(p) >= 3 else 0.0)
+        (float(p[0]), float(p[1]), float(p[2]) if len(p) >= 3 else 0.0,
+         str(p[3]) if len(p) >= 4 else "LR")
         for p in raw
         if len(p) >= 2
     ]
     _terrain_blocked.clear()
-    _last_launch_time = 0.0
+    _last_launch_time.clear()
     log.info("SAM positions updated: %s", _sam_positions)
 
     lat = body.get("lat")
     lon = body.get("lon")
     if lat is not None and lon is not None:
-        # Fetch heightmap in a thread so we don't block the event loop.
         loop = asyncio.get_event_loop()
         hmap = await loop.run_in_executor(
             None, _fetch_heightmap, float(lat), float(lon)
