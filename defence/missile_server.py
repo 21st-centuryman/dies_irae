@@ -305,7 +305,8 @@ async def _missile_sim() -> None:
         for sam_idx, (sx, sy, sz, sam_type) in enumerate(_sam_positions):
             if now - _last_launch_time.get(sam_idx, 0.0) < LAUNCH_INTERVAL_S:
                 continue
-            if _magazine.get(sam_idx, 0) <= 0:
+            remaining = _magazine.get(sam_idx, 0)
+            if remaining <= 0:
                 continue  # site is out of missiles
 
             sr_range2 = SR_MAX_RANGE_M ** 2  # compare squared distances
@@ -344,15 +345,13 @@ async def _missile_sim() -> None:
                 "spawn_z": sz,
             }
             _last_launch_time[sam_idx] = now
+            left = _magazine[sam_idx]
             log.info(
-                "missile %d launched at drone %d from SAM %d (%.0f, %.0f, %.0f)",
-                mid,
-                drone_id,
-                sam_idx,
-                sx,
-                sy,
-                sz,
+                "missile %d launched at drone %d from SAM %d (%s) — %d remaining",
+                mid, drone_id, sam_idx, sam_type, left,
             )
+            if left == 0:
+                log.info("SAM %d (%s) magazine exhausted", sam_idx, sam_type)
 
         # Step each missile.
         for mid in list(_missiles.keys()):
