@@ -224,7 +224,7 @@ document.getElementById("speed").addEventListener("click", toggleSpeed);
 // ===========================================================================
 // SCENARIO
 // ===========================================================================
-const SCENARIO_SERVER = "http://10.154.139.105:3000";
+const SCENARIO_SERVER = `http://${window.location.hostname}:3000`;
 
 // ─── Simulation state ────────────────────────────────────────────────────────
 
@@ -331,6 +331,14 @@ document.getElementById("sendScenario").addEventListener("click", async () => {
       .map(Number)
       .filter((n) => Number.isFinite(n)),
     dir_spread: parseFloat(document.getElementById("dir_spread").value) || 0,
+    seed: (() => {
+      // Empty input → null → backend draws a fresh non-deterministic seed.
+      // Any integer → deterministic spawn azimuths, jitter, and spawn times.
+      const raw = document.getElementById("seed").value.trim();
+      if (raw === "") return null;
+      const n = parseInt(raw, 10);
+      return Number.isFinite(n) ? n : null;
+    })(),
     lat: parseFloat(document.getElementById("lat").value),
     lon: parseFloat(document.getElementById("lon").value),
     targets: radarPositions.map((p) => [

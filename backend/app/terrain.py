@@ -16,7 +16,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-DEFAULT_BASE_URL = "http://10.154.6.177:8000"
+DEFAULT_BASE_URL =  "http://localhost:8000"
 
 _M_PER_DEG_LAT = 111_320.0
 

@@ -147,6 +147,10 @@ class ScenarioConfig(BaseModel):
     # around each supplied direction; 0 → drones spawn exactly on the dirs.
     dir:        list[float] = Field(default_factory=list)
     dir_spread: float       = 0.0
+    # Seed for the spawn-RNG (azimuth, jitter, spawn time). `None` → the
+    # engine picks a fresh OS-entropy seed each scenario; any int makes
+    # the run deterministic given identical other parameters.
+    seed:       int | None  = None
 
     model_config = {"extra": "allow"}
 
@@ -236,6 +240,7 @@ class SimEngine:
         spawn_dirs_deg: list[float] | None = None,
         dir_spread_deg: float = 0.0,
         spawn_window_s: float = 0.0,
+        seed: int | None = None,
     ) -> None:
         self.heightmap   = heightmap
         self.ring_radius = float(ring_radius_m)
@@ -280,7 +285,10 @@ class SimEngine:
         #     to a dir, then jitter by uniform(-spread, +spread) around
         #     it — so dirs=[15, 89] with spread=5 yields drones uniformly
         #     distributed in the arcs [10, 20] and [84, 94].
-        rng = np.random.default_rng()
+        # Seeded RNG drives spawn azimuth (random / dir-jitter modes) and
+        # spawn-time draws. With seed=None numpy uses OS entropy; with an
+        # int the same scenario parameters reproduce the same scenario.
+        rng = np.random.default_rng(seed)
         dirs = list(spawn_dirs_deg) if spawn_dirs_deg else []
         spread = max(0.0, float(dir_spread_deg))
 

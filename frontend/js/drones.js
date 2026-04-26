@@ -7,7 +7,7 @@ import { makeDroneTexture } from "./svg.js";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const WS_URL      = `ws://10.154.139.105:3000/simulation/fake/stream`;
+const WS_URL      = `ws://${window.location.hostname}:3000/simulation/fake/stream`;
 const PREDICT_URL = `ws://${window.location.hostname}:3001/ws`;
 
 const METRES_PER_UNIT = (5 * 2 * 1000) / WORLD_SIZE; // 10 km diameter map → 10 m per world unit
