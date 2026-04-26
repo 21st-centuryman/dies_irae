@@ -227,6 +227,11 @@ _last_launch_time: dict[int, float] = {}  # sam_idx → monotonic time of last l
 LAUNCH_INTERVAL_S: float = 2.0  # minimum seconds between launches per site
 _speed_mult: float = 1.0         # mirrors the frontend speed multiplier
 
+SR_MAGAZINE = 10   # total missiles per SR SAM site
+LR_MAGAZINE = 24   # total missiles per LR SAM site
+_magazine: dict[int, int] = {}   # sam_idx → remaining missiles
+_missiles_fired: int = 0         # total launched this scenario
+
 # ---------------------------------------------------------------------------
 # Drone subscriber task
 # ---------------------------------------------------------------------------
@@ -284,7 +289,7 @@ async def _kill_drone(drone_id: int) -> None:
 
 
 async def _missile_sim() -> None:
-    global _next_missile_id, _frame_number
+    global _next_missile_id, _frame_number, _missiles_fired
     last_tick = time.monotonic()
 
     while True:
@@ -300,6 +305,8 @@ async def _missile_sim() -> None:
         for sam_idx, (sx, sy, sz, sam_type) in enumerate(_sam_positions):
             if now - _last_launch_time.get(sam_idx, 0.0) < LAUNCH_INTERVAL_S:
                 continue
+            if _magazine.get(sam_idx, 0) <= 0:
+                continue  # site is out of missiles
 
             sr_range2 = SR_MAX_RANGE_M ** 2  # compare squared distances
 
@@ -324,6 +331,8 @@ async def _missile_sim() -> None:
 
         # Commit launches together
         for sam_idx, drone_id, sx, sy, sz, sam_type in launches:
+            _magazine[sam_idx] -= 1
+            _missiles_fired += 1
             mid = _next_missile_id
             _next_missile_id += 1
             _missiles[mid] = {
@@ -458,7 +467,7 @@ async def set_speed(body: dict):
 
 @app.put("/sam/positions")
 async def set_sam_positions(body: dict):
-    global _sam_positions, _heightmap, _last_launch_time
+    global _sam_positions, _heightmap, _last_launch_time, _missiles_fired
     raw = body.get("positions", [[0.0, 0.0, 0.0]])
     _sam_positions = [
         (float(p[0]), float(p[1]), float(p[2]) if len(p) >= 3 else 0.0,
@@ -468,7 +477,12 @@ async def set_sam_positions(body: dict):
     ]
     _terrain_blocked.clear()
     _last_launch_time.clear()
+    _magazine.clear()
+    _missiles_fired = 0
+    for idx, (_, _, _, sam_type) in enumerate(_sam_positions):
+        _magazine[idx] = SR_MAGAZINE if sam_type == "SR" else LR_MAGAZINE
     log.info("SAM positions updated: %s", _sam_positions)
+    log.info("magazines: %s", _magazine)
 
     lat = body.get("lat")
     lon = body.get("lon")
@@ -484,6 +498,14 @@ async def set_sam_positions(body: dict):
             log.warning("could not load heightmap; missile terrain collision disabled")
 
     return {"sam_positions": _sam_positions}
+
+
+@app.get("/missiles/stats")
+async def missile_stats():
+    return {
+        "fired":     _missiles_fired,
+        "magazine":  {str(k): v for k, v in _magazine.items()},
+    }
 
 
 @app.websocket("/missiles/stream")

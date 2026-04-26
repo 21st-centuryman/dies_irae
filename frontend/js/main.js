@@ -204,7 +204,7 @@ let _scenarioCount = 0;
 // Tracks the running scenario so we can log it when it ends.
 let _currentScenario = null; // { targets, srCount, lrCount, seed, hitTargets: Set }
 
-function addHistoryRow({ targets, srCount, lrCount, droneCount, seed, hitTargets }) {
+function addHistoryRow({ targets, srCount, lrCount, droneCount, missilesFired, seed, hitTargets }) {
   _scenarioCount++;
   historyCount.textContent = `${_scenarioCount} scenario${_scenarioCount === 1 ? "" : "s"}`;
 
@@ -241,6 +241,11 @@ function addHistoryRow({ targets, srCount, lrCount, droneCount, seed, hitTargets
   costTd.textContent = `€${(droneCount * 5000).toLocaleString()}`;
   tr.appendChild(costTd);
 
+  // Missiles fired
+  const missilesTd = document.createElement("td");
+  missilesTd.textContent = missilesFired ?? "—";
+  tr.appendChild(missilesTd);
+
   // Seed
   const seedTd = document.createElement("td");
   seedTd.textContent = seed ?? "—";
@@ -249,11 +254,18 @@ function addHistoryRow({ targets, srCount, lrCount, droneCount, seed, hitTargets
   historyList.prepend(tr);
 }
 
-function _commitScenario() {
-  if (_currentScenario) {
-    addHistoryRow(_currentScenario);
-    _currentScenario = null;
-  }
+async function _commitScenario() {
+  if (!_currentScenario) return;
+  const scenario = _currentScenario;
+  _currentScenario = null;
+
+  try {
+    const MISSILE_SERVER = `http://${window.location.hostname}:4000`;
+    const res = await fetch(`${MISSILE_SERVER}/missiles/stats`);
+    if (res.ok) scenario.missilesFired = (await res.json()).fired;
+  } catch (_) { /* non-fatal if missile server isn't running */ }
+
+  addHistoryRow(scenario);
 }
 
 document.addEventListener("droneHit", (e) => {
@@ -310,7 +322,7 @@ let simRunning = false;
 async function stopScenario() {
   simRunning = false;
   setSimRunning(false);
-  _commitScenario();
+  await _commitScenario();
   try {
     await fetch(`${SCENARIO_SERVER}/scenario/stop`, { method: "PUT" });
   } catch (_) { /* non-fatal if server not reachable */ }
@@ -442,12 +454,13 @@ document.getElementById("sendScenario").addEventListener("click", async () => {
       setTargets(targetObjs);
       const placed = getSamPositions();
       _currentScenario = {
-        targets:    targetObjs,
-        srCount:    placed.filter(s => s.type === "SR").length,
-        lrCount:    placed.filter(s => s.type === "LR").length,
-        droneCount: payload.drone_count,
-        seed:       data.seed ?? null,
-        hitTargets: new Set(),
+        targets:       targetObjs,
+        srCount:       placed.filter(s => s.type === "SR").length,
+        lrCount:       placed.filter(s => s.type === "LR").length,
+        droneCount:    payload.drone_count,
+        missilesFired: null,
+        seed:          data.seed ?? null,
+        hitTargets:    new Set(),
       };
       document.dispatchEvent(
         new CustomEvent("scenarioStarted", {
