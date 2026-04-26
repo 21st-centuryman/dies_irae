@@ -5,8 +5,8 @@ const HEIGHT_SERVER = `http://${window.location.hostname}:8000`;
 
 // Downsample the 4096×4096 source to this resolution for the mesh.
 // 512 → 511×511 quads (~520k triangles), smooth and fast.
-const GRID = 1024;
-//const GRID = 4096;
+//const GRID = 2048;
+const GRID = 4096;
 
 // Vertical exaggeration — makes elevation differences easier to read.
 const HEIGHT_SCALE = 55;
