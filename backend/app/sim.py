@@ -196,8 +196,14 @@ COST_GOAL_WEIGHT      = 50.0  # per radian of bearing-to-target misalignment
 COST_TURN_WEIGHT      = 30.0  # per radian of heading change (hysteresis)
 MAX_YAW_RATE_DEG_S    = 120.0 # cap on heading change per second
 ALT_TRACK_TAU_S       = 1.5   # gap-closing time constant for vertical track
-IMPACT_RADIUS_M       = 5.0   # final-impact override: inside this XY radius
-                              # the drone seeks target_3d directly
+IMPACT_RADIUS_M       = 50.0  # final-impact override: inside this XY radius
+                              # the drone abandons corridor avoidance and
+                              # seeks target_3d directly. Wide enough that
+                              # the drone has 1–2 s of dive at max_speed
+                              # before passing target XY — short windows
+                              # let the drone fly past and orbit because
+                              # bearing-to-target flips and the yaw-rate
+                              # limit needs ~1.5 s to swing back.
 DESCEND_RANGE_M       = 500.0 # XY distance over which the safety AGL ramps
                               # linearly from full → 0, so the drone glides
                               # smoothly down onto the target instead of

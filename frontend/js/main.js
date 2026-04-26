@@ -270,18 +270,14 @@ updateAttackTypeState();
 let scenarioType = "allatonce";
 
 const spawnWindowField = document.getElementById("spawnWindowField");
-const waveIntervalField = document.getElementById("waveIntervalField");
 
 function updateScenarioFieldStates() {
-  const isWave = scenarioType === "wave";
-
-  // spawn_window is honored by the backend regardless of scenario type:
-  // 0 → all drones spawn at once, > 0 → uniform-random in [0, window].
-  spawnWindowField.classList.remove("disabled");
-  spawnWindowField.querySelector("input").disabled = false;
-
-  waveIntervalField.classList.toggle("disabled", !isWave);
-  waveIntervalField.querySelector("input").disabled = !isWave;
+  // "All at once" forces spawn_window = 0 (all drones in at t=0), so the
+  // input is meaningless then — grey it out. "Spread" honors whatever
+  // the user typed.
+  const isAllAtOnce = scenarioType === "allatonce";
+  spawnWindowField.classList.toggle("disabled", isAllAtOnce);
+  spawnWindowField.querySelector("input").disabled = isAllAtOnce;
 }
 
 document.getElementById("scenarioType").addEventListener("click", (e) => {
@@ -321,8 +317,11 @@ document.getElementById("sendScenario").addEventListener("click", async () => {
     pct_short: parseInt(document.getElementById("pctShort").value) || 0,
     pct_long: parseInt(document.getElementById("pctLong").value) || 0,
     scenario_type: scenarioType,
-    spawn_window: parseInt(document.getElementById("spawnWindow").value) || 0,
-    wave_interval: parseInt(document.getElementById("waveInterval").value) || 0,
+    spawn_window:
+      scenarioType === "allatonce"
+        ? 0
+        : parseInt(document.getElementById("spawnWindow").value) || 0,
+    wave_interval: 0,  // dummy: backend still accepts this field but it's unused
     dir: document
       .getElementById("dir")
       .value.split(",")

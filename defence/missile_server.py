@@ -113,7 +113,7 @@ def _pack_frame(frame_number: int, missiles: dict) -> bytes:
 # Config
 # ---------------------------------------------------------------------------
 
-DRONE_WS_URL = "ws://10.154.139.105:3000/simulation/fake/stream"
+DRONE_WS_URL = "ws://localhost:3000/simulation/fake/stream"
 HEIGHT_SERVER_URL = "http://10.154.6.177:8000"
 MISSILE_SPEED_MPS = 250.0  # m/s — faster than drones
 INTERCEPT_RADIUS_M = 40.0  # metres — close enough counts as a hit
