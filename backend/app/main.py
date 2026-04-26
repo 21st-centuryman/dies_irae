@@ -109,6 +109,7 @@ def _build_engine(heightmap: Heightmap, config: ScenarioConfig) -> SimEngine:
         drone_count=max(1, int(config.drone_count)),
         spawn_dirs_deg=[float(d) for d in config.dir],
         dir_spread_deg=float(config.dir_spread),
+        spawn_window_s=float(config.spawn_window),
     )
 
 

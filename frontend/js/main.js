@@ -273,11 +273,12 @@ const spawnWindowField = document.getElementById("spawnWindowField");
 const waveIntervalField = document.getElementById("waveIntervalField");
 
 function updateScenarioFieldStates() {
-  const isAllAtOnce = scenarioType === "allatonce";
   const isWave = scenarioType === "wave";
 
-  spawnWindowField.classList.toggle("disabled", isAllAtOnce);
-  spawnWindowField.querySelector("input").disabled = isAllAtOnce;
+  // spawn_window is honored by the backend regardless of scenario type:
+  // 0 → all drones spawn at once, > 0 → uniform-random in [0, window].
+  spawnWindowField.classList.remove("disabled");
+  spawnWindowField.querySelector("input").disabled = false;
 
   waveIntervalField.classList.toggle("disabled", !isWave);
   waveIntervalField.querySelector("input").disabled = !isWave;

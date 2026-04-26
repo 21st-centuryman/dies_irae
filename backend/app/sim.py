@@ -235,6 +235,7 @@ class SimEngine:
         drone_count: int = 1,
         spawn_dirs_deg: list[float] | None = None,
         dir_spread_deg: float = 0.0,
+        spawn_window_s: float = 0.0,
     ) -> None:
         self.heightmap   = heightmap
         self.ring_radius = float(ring_radius_m)
@@ -263,10 +264,9 @@ class SimEngine:
         self.target_xy = (float(self._targets_3d[0, 0]), float(self._targets_3d[0, 1]))
         self.target_z  = float(self._targets_3d[0, 2])
 
-        # ── Drones: round-robin assign each drone to one target ─────────
+        # ── Drone slot allocation (round-robin target assignment) ───────
         drone_count = max(1, int(drone_count))
-        self.state  = DroneState(capacity=drone_count)
-        self._drone_target_idx = np.array(
+        drone_target_idx = np.array(
             [i % n_targets for i in range(drone_count)], dtype=np.intp,
         )
 
@@ -296,26 +296,65 @@ class SimEngine:
             else:
                 spawn_az_deg = base
 
+        spawn_positions: list[tuple[float, float, float]] = []
         for az in spawn_az_deg:
             theta = compass_to_math_angle(float(az))
             sx = self.ring_radius * math.cos(theta)
             sy = self.ring_radius * math.sin(theta)
             sg = float(heightmap.height_at(sx, sy))
             sz = sg + spawn_altitude_agl_m
-            self.state.spawn(
-                position=(sx, sy, sz),
-                velocity=(0.0, 0.0, 0.0),
-                type_=drone_type,
-                state=ACTIVE,
-                intent=INTENT_SEEKING,
-            )
+            spawn_positions.append((sx, sy, sz))
 
-        # Representative spawn for the API/log: first drone's pose.
-        self.spawn_xyz = tuple(float(v) for v in self.state.positions[0])
+        # ── Spawn times: each drone enters at a random t ∈ [0, window] ──
+        # Drones with t = 0 spawn immediately; later ones are held back and
+        # promoted to ACTIVE inside step() when the sim clock catches up.
+        spawn_window = max(0.0, float(spawn_window_s))
+        if spawn_window > 0.0:
+            spawn_times = rng.uniform(0.0, spawn_window, size=drone_count)
+        else:
+            spawn_times = np.zeros(drone_count, dtype=np.float64)
+
+        # Sort everything (positions, target idx) by spawn time so we can
+        # promote drones in order — the i-th-spawned drone gets the i-th
+        # entry of these arrays.
+        order = np.argsort(spawn_times, kind="stable")
+        self._spawn_times      = spawn_times[order].astype(np.float32)
+        self._spawn_positions  = [spawn_positions[int(i)] for i in order]
+        self._drone_target_idx = drone_target_idx[order].astype(np.intp)
+        self._next_spawn_idx   = 0
+
+        self.state = DroneState(capacity=drone_count)
 
         self.t              = 0.0
         self.finished       = False
         self.finish_reason: str | None = None
+
+        # Promote any drones whose spawn time is already ≤ 0 (e.g. when
+        # spawn_window == 0, every drone enters at t=0).
+        self._spawn_due()
+
+        # Representative spawn for the API/log: first-spawned drone's pose.
+        self.spawn_xyz = (
+            tuple(float(v) for v in self.state.positions[0])
+            if self.state.n > 0
+            else tuple(float(v) for v in self._spawn_positions[0])
+        )
+
+    def _spawn_due(self) -> None:
+        """Promote pending drones whose spawn time has arrived to ACTIVE."""
+        while (
+            self._next_spawn_idx < self.state.capacity
+            and self._spawn_times[self._next_spawn_idx] <= self.t
+        ):
+            sx, sy, sz = self._spawn_positions[self._next_spawn_idx]
+            self.state.spawn(
+                position=(sx, sy, sz),
+                velocity=(0.0, 0.0, 0.0),
+                type_=self.drone_type,
+                state=ACTIVE,
+                intent=INTENT_SEEKING,
+            )
+            self._next_spawn_idx += 1
 
     def _choose_desired_velocity(
         self, pos: np.ndarray, vel: np.ndarray
@@ -346,8 +385,9 @@ class SimEngine:
         cur_theta = np.zeros(n, dtype=np.float32)
         cur_theta[moving] = np.arctan2(vel[moving, 1], vel[moving, 0])
         # Per-drone target lookup (each drone has its own target via
-        # `_drone_target_idx`). Shape (n, 3).
-        drone_tgt = self._targets_3d[self._drone_target_idx]
+        # `_drone_target_idx`). Sliced to `n` because pending drones that
+        # haven't spawned yet aren't represented in `pos`. Shape (n, 3).
+        drone_tgt = self._targets_3d[self._drone_target_idx[:n]]
         # Bearing from each drone to its assigned target (XY).
         to_tgt = drone_tgt[:, :2] - pos[:, :2]
         tgt_theta = np.arctan2(to_tgt[:, 1], to_tgt[:, 0]).astype(np.float32)
@@ -416,27 +456,38 @@ class SimEngine:
         desired_vy = np.sin(new_theta).astype(np.float32) * self.max_speed
 
         # ── 6. Vertical: terrain-follow that ramps into a dive near target ─
-        # Only consider corridor probes that lie *between* us and the target.
-        # Probes past the target (e.g. a hill behind it) would otherwise
-        # keep `near_peak` high and prevent the drone from descending.
-        dist_xy   = np.linalg.norm(to_tgt, axis=1)
-        chosen_terrain = terrain[rows, best_idx, :]                   # (n, P)
-        within_target  = probe_d[None, :] <= dist_xy[:, None]         # (n, P)
-        masked_terrain = np.where(
-            within_target, chosen_terrain, np.float32(-np.inf),
-        )
-        near_peak = masked_terrain.max(axis=1)
-        # If the drone is already inside the closest probe distance, fall
-        # back to its own target's elevation as the floor.
-        no_probes = ~within_target.any(axis=1)
-        near_peak = np.where(no_probes, drone_tgt[:, 2], near_peak)
+        # The corridor-search `best_idx` can flip between candidate headings
+        # tick-to-tick (their costs are close after the soft-margin band).
+        # If we used `terrain[rows, best_idx, :]` for the vertical floor,
+        # `near_peak` would jump tens of meters whenever the choice flipped
+        # — drone chases, overshoots, oscillates.
+        #
+        # Instead, probe terrain along the drone's *current velocity*
+        # direction (yaw-rate limited, so it evolves smoothly even when
+        # the lateral corridor choice flips). Vertical and lateral are now
+        # decoupled.
+        dist_xy = np.linalg.norm(to_tgt, axis=1)
 
-        # Safety AGL ramps linearly from full → 0 over DESCEND_RANGE_M of
-        # final approach, so the drone glides down to target_z by the time
-        # it arrives instead of cruising overhead and overshooting.
-        descend_factor = np.clip(dist_xy / DESCEND_RANGE_M, 0.0, 1.0)
-        safety_agl     = TERRAIN_SAFETY_AGL_M * descend_factor
-        desired_z      = np.minimum(near_peak + safety_agl, np.float32(max_alt))
+        h_speed_safe = np.maximum(h_speed, 1e-3)
+        fwd_x = np.where(moving, vel[:, 0] / h_speed_safe, np.cos(tgt_theta))
+        fwd_y = np.where(moving, vel[:, 1] / h_speed_safe, np.sin(tgt_theta))
+        fwd_x = fwd_x.astype(np.float32)
+        fwd_y = fwd_y.astype(np.float32)
+
+        v_probe_x = pos[:, 0:1] + fwd_x[:, None] * probe_d[None, :]   # (n, P)
+        v_probe_y = pos[:, 1:2] + fwd_y[:, None] * probe_d[None, :]
+        fwd_terrain = self.heightmap.height_at_batch(
+            v_probe_x.reshape(-1), v_probe_y.reshape(-1),
+        ).reshape(v_probe_x.shape).astype(np.float32)
+        corridor_peak = fwd_terrain.max(axis=1)                       # (n,)
+
+        # Smoothly blend the floor between corridor-peak (far) and the
+        # target's own elevation (close), so a hill *past* the target
+        # doesn't keep the drone aloft when it's about to impact.
+        approach   = np.clip(1.0 - dist_xy / DESCEND_RANGE_M, 0.0, 1.0)
+        near_peak  = (1.0 - approach) * corridor_peak + approach * drone_tgt[:, 2]
+        safety_agl = TERRAIN_SAFETY_AGL_M * (1.0 - approach)
+        desired_z  = np.minimum(near_peak + safety_agl, np.float32(max_alt))
 
         # Predictive vz that closes the altitude gap over ALT_TRACK_TAU_S.
         desired_vz = np.clip(
@@ -473,19 +524,31 @@ class SimEngine:
         if self.finished:
             return
 
+        # Promote any pending drones whose spawn time has arrived.
+        self._spawn_due()
+
         n       = self.state.n
         pos     = self.state.positions[:n]
         vel     = self.state.velocities[:n]
         states  = self.state.states[:n]
         intents = self.state.intents[:n]
 
-        active = states == ACTIVE
-        if not active.any():
-            # All drones have either reached the target or been destroyed.
+        active      = states == ACTIVE if n > 0 else np.zeros(0, dtype=bool)
+        all_spawned = self._next_spawn_idx >= self.state.capacity
+
+        # Done condition: every drone has been spawned AND none are active.
+        if all_spawned and (n == 0 or not active.any()):
             self.finished      = True
             self.finish_reason = (
-                "reached_target" if (states == REACHED).any() else "no_active_drones"
+                "reached_target"
+                if n > 0 and (states == REACHED).any()
+                else "no_active_drones"
             )
+            return
+
+        # Idle tick: more drones still pending, but nothing to steer right now.
+        if n == 0 or not active.any():
+            self.t += SIM_DT
             return
 
         # Reach check first so we don't steer drones that are already there.
@@ -493,7 +556,7 @@ class SimEngine:
         # not XY — otherwise drones get flagged "reached" while still at
         # cruise altitude overhead, before the impact-radius dive can bring
         # them down to target_z.
-        drone_tgt   = self._targets_3d[self._drone_target_idx]
+        drone_tgt   = self._targets_3d[self._drone_target_idx[:n]]
         delta       = drone_tgt - pos
         dist3       = np.sqrt(delta[:, 0] ** 2 + delta[:, 1] ** 2 + delta[:, 2] ** 2)
         reached_now = active & (dist3 < REACH_THRESHOLD_M)
